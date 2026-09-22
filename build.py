@@ -407,7 +407,12 @@ body {
   font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 .wrap { max-width: 960px; margin: 0 auto; }
-h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+.top { display: flex; align-items: center; gap: 16px; margin-bottom: 4px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+.rebuild { margin-left: auto; font-size: 13px; text-decoration: none;
+  color: var(--accent); border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 11px; white-space: nowrap; }
+.rebuild:hover { border-color: var(--accent); }
 .sub { color: var(--muted); font-size: 13px; margin: 0 0 24px; }
 .summary { display: flex; gap: 20px; flex-wrap: wrap; margin: 0 0 24px;
   padding: 14px 16px; background: var(--card); border: 1px solid var(--line);
@@ -569,7 +574,15 @@ def render(repos, owner, now):
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>CI status — {e(owner)}</title>",
         f"<style>{CSS}</style></head><body><div class='wrap'>",
-        "<h1>CI status</h1>",
+        (
+            "<div class='top'><h1>CI status</h1>"
+            # Links rather than fires: triggering a workflow needs a token with
+            # actions:write, and this page is public, so the only way to make
+            # the button real is to put a credential in the browser.
+            "<a class='rebuild' href='https://github.com/"
+            f"{e(owner)}/ci-dashboard/actions/workflows/build.yml'>Rebuild now "
+            "&rarr;</a></div>"
+        ),
         (
             f"<p class='sub'>Default-branch workflow results and open pull requests "
             f"across {len(repos)} active repositories. "
@@ -634,12 +647,7 @@ def render(repos, owner, now):
         parts.append("</section>")
     parts.append(
         "<footer>Built by <a href='https://github.com/"
-        f"{e(owner)}/ci-dashboard'>ci-dashboard</a>"
-        # No button here: firing a workflow needs a token with actions:write,
-        # and this page is public. The link lands on the Run workflow button
-        # instead, which costs a click and no secret.
-        " · <a href='https://github.com/"
-        f"{e(owner)}/ci-dashboard/actions/workflows/build.yml'>rebuild now</a>. "
+        f"{e(owner)}/ci-dashboard'>ci-dashboard</a>. "
         "Public, non-fork repositories with CI or an open pull request. "
         "Advisories from <a href='https://osv.dev'>OSV</a>, which carries RustSec "
         "and GitHub's database: a GHSA- id is one <code>cargo audit</code> does "
