@@ -28,6 +28,39 @@ GITHUB_TOKEN=$(gh auth token) python3 build.py --out-dir _site
 
 No dependencies beyond the standard library.
 
+## Advisories
+
+For every repository with a `Cargo.lock`, the board checks the dependencies
+against [OSV](https://osv.dev), which carries the RustSec database -- the same
+advisories `cargo audit` reports, without needing a Rust toolchain here.
+
+It checks two refs, because they answer different questions:
+
+- **main** -- is the problem fixed?
+- **published** (the newest release tag) -- does what people can `apt install`
+  today still have it?
+
+Those diverge exactly when it matters. A merged fix does nothing for anyone
+until a tag ships it, so a repository whose branch is clean and whose release is
+not gets called out, and sorts to the top of the page: a red build is your
+problem, a vulnerable release is everyone else's.
+
+Expect this to find *more* than the `cargo audit` job in a repo's CI, not fewer.
+cargo audit reads RustSec alone; OSV carries RustSec plus GitHub's own database,
+and some crates.io advisories were only ever filed as a GHSA -- the tract-onnx
+arbitrary-file-read and the tar PAX issue currently showing here are both
+invisible to cargo audit. An id beginning `RUSTSEC-` is one CI would also flag;
+a `GHSA-` id is one only this board sees. The RustSec advisory and its GHSA twin
+are the same finding and are counted once.
+
+Unmaintained and yanked crates are counted separately from vulnerabilities.
+`cargo audit` treats them as warnings and so does this, because a crate nobody
+maintains is worth knowing about but is not the same as an advisory.
+
+Dependabot security updates cover the other half -- it opens the bump PR when a
+fix exists. This board is what shows the ones it cannot fix yet, and what is
+still out in a release.
+
 ## What lands on the board
 
 Public, non-fork, non-archived repositories, plus anything in `EXTRA_REPOS` --
