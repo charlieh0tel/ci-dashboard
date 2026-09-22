@@ -53,7 +53,13 @@ invisible to cargo audit. An id beginning `RUSTSEC-` is one CI would also flag;
 a `GHSA-` id is one only this board sees. The RustSec advisory and its GHSA twin
 are the same finding and are counted once.
 
-Unmaintained and yanked crates are counted separately from vulnerabilities.
+Yanked versions are the one thing this board cannot see. A yank is registry
+state, not an advisory, so OSV has no record of it and only `cargo audit` --
+which reads crates.io directly -- will tell you. The gap runs both ways: the
+board sees GHSA-only advisories that cargo audit misses, and cargo audit sees
+yanks the board misses. Neither on its own is the whole picture.
+
+Unmaintained crates are counted separately from vulnerabilities.
 `cargo audit` treats them as warnings and so does this, because a crate nobody
 maintains is worth knowing about but is not the same as an advisory.
 

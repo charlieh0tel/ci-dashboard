@@ -577,7 +577,8 @@ def render(repos, owner, now):
         "Public, non-fork repositories with CI or an open pull request. "
         "Advisories from <a href='https://osv.dev'>OSV</a>, which carries RustSec "
         "and GitHub's database: a GHSA- id is one <code>cargo audit</code> does "
-        "not see.</footer>"
+        "not see. Yanked versions are registry state rather than advisories, so "
+        "they appear only in <code>cargo audit</code>.</footer>"
     )
     parts.append("</div></body></html>")
     return "\n".join(parts)
