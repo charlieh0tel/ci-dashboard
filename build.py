@@ -354,17 +354,40 @@ def collect(owner, token):
         repo["health"] = health(repo)
         if interesting(repo):
             out.append(repo)
-    # A release people can install with a known advisory in it outranks a red
-    # build: the build is a problem for you, the release is a problem for them.
-    order = {"failing": 0, "unknown": 1, "passing": 2}
-    return sorted(
-        out,
-        key=lambda r: (
-            not real(r["advisories"]["published"]),
-            order[r["health"]],
-            -len(r["prs"]),
-            r["name"].lower(),
-        ),
+    return sorted(out, key=rank)
+
+
+def short(name):
+    return name.split("/", 1)[1] if "/" in name else name
+
+
+def group(repo):
+    """Which section a repository belongs in, and why it is there.
+
+    A release people can install with a known advisory in it outranks a red
+    build: the build is a problem for you, the release is a problem for them.
+    """
+    if real(repo["advisories"]["published"]) or repo["health"] == "failing":
+        return 0
+    if repo["prs"]:
+        return 1
+    return 2
+
+
+def rank(repo):
+    # Count, not presence. Seven advisories outranks one, which the previous
+    # key got backwards by asking only whether there were any.
+    published = len(real(repo["advisories"]["published"]))
+    on_main = len(real(repo["advisories"]["main"]))
+    return (
+        group(repo),
+        -published,
+        0 if repo["health"] == "failing" else 1,
+        -on_main,
+        -len(repo["prs"]),
+        # The displayed name. Sorting on owner/name puts the one repository
+        # from another organisation at the end, looking misfiled.
+        short(repo["name"]).lower(),
     )
 
 
@@ -420,6 +443,10 @@ h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
 .summary div { font-size: 13px; color: var(--muted); }
 .summary b { display: block; font-size: 22px; color: var(--ink); font-weight: 600; }
 .summary b.fail { color: var(--fail); }
+h2.section { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); font-weight: 600; margin: 26px 0 8px; }
+h2.section:first-of-type { margin-top: 0; }
+h2.section .count { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .repo { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   padding: 14px 16px; margin-bottom: 10px; }
 .repo.failing { border-left: 3px solid var(--fail); }
@@ -584,7 +611,8 @@ def render(repos, owner, now):
             "&rarr;</a></div>"
         ),
         (
-            f"<p class='sub'>Default-branch workflow results and open pull requests "
+            f"<p class='sub'>Vulnerable releases and red builds first, then "
+            f"anything awaiting review. Default-branch workflow results and open pull requests "
             f"across {len(repos)} active repositories. "
             f"Rebuilt {e(now.strftime('%Y-%m-%d %H:%M UTC'))} "
             "(<span id='age'></span>).</p>"
@@ -599,7 +627,21 @@ def render(repos, owner, now):
         f"<div><b>{len(repos)}</b>repos watched</div>",
         "</div>",
     ]
+    titles = {
+        0: "Needs attention",
+        1: "Open pull requests",
+        2: "Quiet",
+    }
+    seen_groups = set()
     for r in repos:
+        g = group(r)
+        if g not in seen_groups:
+            seen_groups.add(g)
+            n = sum(1 for x in repos if group(x) == g)
+            parts.append(
+                f"<h2 class='section'>{e(titles[g])} "
+                f"<span class='count'>({n})</span></h2>"
+            )
         parts.append(f"<section class='repo {r['health']}'>")
         short = (
             r["name"].split("/", 1)[1]
