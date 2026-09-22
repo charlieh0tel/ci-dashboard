@@ -20,6 +20,18 @@ API is capped at 60 requests an hour per visitor, and a page that needs a token
 is a page that leaks one. `status.json` is published alongside it if you want to
 script against the same data.
 
+Rebuild on demand rather than waiting for the half hour: the **rebuild now**
+link in the page footer goes to the workflow, where *Run workflow* fires it, or
+
+```sh
+gh workflow run build.yml -R charlieh0tel/ci-dashboard
+```
+
+The page has no button of its own on purpose. Firing a workflow needs a token
+with `actions: write`, and this page is public -- a button here would mean
+shipping that token to every visitor. A fresh build still lands behind Pages'
+ten-minute CDN cache.
+
 Run it locally the same way CI does:
 
 ```sh

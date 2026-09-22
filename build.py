@@ -112,6 +112,7 @@ def latest_runs(full_name, branch, token):
                 "conclusion": run["conclusion"],
                 "url": run["html_url"],
                 "finished": run["updated_at"],
+                "event": run["event"],
             }
         )
     return sorted(runs, key=lambda r: r["name"].lower())
@@ -310,11 +311,18 @@ def interesting(repo):
 
 
 def health(repo):
-    if any(
-        r["conclusion"] not in ("success", "skipped", "neutral") for r in repo["runs"]
-    ):
+    """Red only for failures that still describe the current code.
+
+    The newest run of a workflow can be months old -- a release triggered by
+    hand, a workflow that only fires on tags -- and a failure from before the
+    last push refers to code that is no longer there. Counting those paints a
+    repository red forever over something already superseded, which is the
+    fastest way to teach someone to ignore this page.
+    """
+    live = [r for r in repo["runs"] if not r["stale"]]
+    if any(r["conclusion"] not in ("success", "skipped", "neutral") for r in live):
         return "failing"
-    if repo["runs"]:
+    if live:
         return "passing"
     return "unknown"
 
@@ -341,6 +349,8 @@ def collect(owner, token):
                 full_name, meta["default_branch"], token, pkg_cache, vuln_cache
             ),
         }
+        for run in repo["runs"]:
+            run["stale"] = run["finished"] < meta["pushed_at"]
         repo["health"] = health(repo)
         if interesting(repo):
             out.append(repo)
@@ -447,6 +457,8 @@ h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
 .adv-list a:hover { text-decoration: underline; }
 .adv-list .crate { color: var(--ink); }
 .stale { margin-top: 6px; font-size: 12px; color: var(--warn); }
+.chip.stale-chip { opacity: 0.45; font-weight: 400; }
+#age.old { color: var(--warn); font-weight: 600; }
 footer { color: var(--muted); font-size: 12px; margin-top: 28px; text-align: center; }
 footer a { color: var(--muted); }
 @media (max-width: 600px) {
@@ -455,6 +467,46 @@ footer a { color: var(--muted); }
   .prs li { flex-wrap: wrap; }
 }
 """
+
+
+# Reload only when the data behind the page has actually changed, and say how
+# old it is meanwhile. The build runs twice an hour and Pages caches for ten
+# minutes, so polling faster than this buys nothing; and a board that quietly
+# stops updating -- a delayed cron, or GitHub disabling the schedule after 60
+# days of no activity -- should say so rather than look equally authoritative
+# at one minute old and at three days.
+REFRESH_JS = """<script>
+(function () {
+  var built = new Date("__GENERATED__");
+  var el = document.getElementById("age");
+  function human(ms) {
+    var m = Math.round(ms / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return m + " min ago";
+    var h = Math.round(m / 60);
+    if (h < 24) return h + (h === 1 ? " hour ago" : " hours ago");
+    var d = Math.round(h / 24);
+    return d + (d === 1 ? " day ago" : " days ago");
+  }
+  function tick() {
+    if (!el) return;
+    var age = Date.now() - built.getTime();
+    el.textContent = "updated " + human(age);
+    // Two builds missed: something is wrong with the schedule, not with you.
+    el.className = age > 75 * 60000 ? "old" : "";
+  }
+  tick();
+  setInterval(tick, 30000);
+  setInterval(function () {
+    fetch("status.json?t=" + Date.now(), { cache: "no-store" })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (d) {
+        if (d && d.generated && d.generated !== "__GENERATED__") location.reload();
+      })
+      .catch(function () { /* offline or a bad deploy: keep showing the age */ });
+  }, 120000);
+})();
+</script>"""
 
 
 def advisory_line(label, items, tag=None):
@@ -521,7 +573,8 @@ def render(repos, owner, now):
         (
             f"<p class='sub'>Default-branch workflow results and open pull requests "
             f"across {len(repos)} active repositories. "
-            f"Rebuilt {e(now.strftime('%Y-%m-%d %H:%M UTC'))}.</p>"
+            f"Rebuilt {e(now.strftime('%Y-%m-%d %H:%M UTC'))} "
+            "(<span id='age'></span>).</p>"
         ),
         "<div class='summary'>",
         f"<div><b class='{'fail' if failing else ''}'>{len(failing)}</b>repos failing</div>",
@@ -554,9 +607,17 @@ def render(repos, owner, now):
                     if run["conclusion"] == "failure"
                     else "other"
                 )
+                if run["stale"]:
+                    cls += " stale-chip"
+                title = (
+                    f" title='Ran {ago(run['finished'], now)}, before the last push'"
+                    if run["stale"]
+                    else ""
+                )
                 parts.append(
-                    f"<a class='chip {cls}' href='{e(run['url'])}'>"
-                    f"{e(run['name'])} · {e(run['conclusion'] or 'n/a')}</a>"
+                    f"<a class='chip {cls}' href='{e(run['url'])}'{title}>"
+                    f"{e(run['name'])} · {e(run['conclusion'] or 'n/a')}"
+                    f"{' (stale)' if run['stale'] else ''}</a>"
                 )
             parts.append("</div>")
         if r["prs"]:
@@ -573,13 +634,19 @@ def render(repos, owner, now):
         parts.append("</section>")
     parts.append(
         "<footer>Built by <a href='https://github.com/"
-        f"{e(owner)}/ci-dashboard'>ci-dashboard</a>. "
+        f"{e(owner)}/ci-dashboard'>ci-dashboard</a>"
+        # No button here: firing a workflow needs a token with actions:write,
+        # and this page is public. The link lands on the Run workflow button
+        # instead, which costs a click and no secret.
+        " · <a href='https://github.com/"
+        f"{e(owner)}/ci-dashboard/actions/workflows/build.yml'>rebuild now</a>. "
         "Public, non-fork repositories with CI or an open pull request. "
         "Advisories from <a href='https://osv.dev'>OSV</a>, which carries RustSec "
         "and GitHub's database: a GHSA- id is one <code>cargo audit</code> does "
         "not see. Yanked versions are registry state rather than advisories, so "
         "they appear only in <code>cargo audit</code>.</footer>"
     )
+    parts.append(REFRESH_JS.replace("__GENERATED__", now.isoformat()))
     parts.append("</div></body></html>")
     return "\n".join(parts)
 
