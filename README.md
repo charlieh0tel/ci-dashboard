@@ -86,8 +86,16 @@ which is how `PAARA-org/w6otx` gets on. A repository still has to have either CI
 or an open pull request to earn a row, or the board fills up with dormant
 repositories that will never show anything.
 
-Rows sort worst-first: failing default branch, then unknown, then by number of
-open pull requests.
+Rows fall into three labelled sections, so the order is visible rather than
+inferred:
+
+- **Needs attention** -- a published release carrying an advisory, or a red
+  default branch. Sorted by how many advisories, worst first.
+- **Open pull requests** -- nothing wrong, something waiting. Sorted by count.
+- **Quiet** -- alphabetical.
+
+A vulnerable release outranks a red build: the build is your problem, the
+release is everyone else's.
 
 ## Private repositories
 
