@@ -14,7 +14,7 @@ this page is a convenience; the CI half is the part you cannot get anywhere else
 ## How it works
 
 `build.py` queries the API and writes `index.html` and `status.json`. A workflow
-runs it twice an hour and deploys the result to Pages. The page is completely
+runs it every 15 minutes and deploys the result to Pages. The page is completely
 static: it makes no API calls of its own, because a browser hitting the GitHub
 API is capped at 60 requests an hour per visitor, and a page that needs a token
 is a page that leaks one. `status.json` is published alongside it if you want to
@@ -100,7 +100,7 @@ metadata, actions and pull requests), drop the `private` filter in
 
 ## Cost and freshness
 
-Two runs an hour, a few seconds each. GitHub delays scheduled workflows under
+Four runs an hour, a few seconds each. GitHub delays scheduled workflows under
 load and drops them entirely on repositories with no activity for 60 days, so
 treat the timestamp on the page as the truth rather than assuming it is current.
 `workflow_dispatch` rebuilds it on demand.

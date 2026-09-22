@@ -45,7 +45,7 @@ def api(path, token, params=None):
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    # Roughly 80 requests per build, unattended, twice an hour: a single
+    # Roughly 80 requests per build, unattended, four times an hour: a single
     # timeout should not cost the whole board.
     for attempt in range(3):
         try:
@@ -475,7 +475,7 @@ footer a { color: var(--muted); }
 
 
 # Reload only when the data behind the page has actually changed, and say how
-# old it is meanwhile. The build runs twice an hour and Pages caches for ten
+# old it is meanwhile. The build runs every 15 minutes and Pages caches for ten
 # minutes, so polling faster than this buys nothing; and a board that quietly
 # stops updating -- a delayed cron, or GitHub disabling the schedule after 60
 # days of no activity -- should say so rather than look equally authoritative
@@ -497,8 +497,8 @@ REFRESH_JS = """<script>
     if (!el) return;
     var age = Date.now() - built.getTime();
     el.textContent = "updated " + human(age);
-    // Two builds missed: something is wrong with the schedule, not with you.
-    el.className = age > 75 * 60000 ? "old" : "";
+    // Two builds missed at a 15-minute cadence: suspect the schedule.
+    el.className = age > 40 * 60000 ? "old" : "";
   }
   tick();
   setInterval(tick, 30000);

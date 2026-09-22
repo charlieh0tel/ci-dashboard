@@ -1,9 +1,11 @@
 name: Build dashboard
 
 on:
-  # Off the hour: scheduled jobs on the hour queue behind everyone else's.
+  # Every 15 minutes, off the quarter-hour: scheduled jobs on the hour and the
+  # quarter queue behind everyone else's. Pages caches HTML for 10 minutes, so
+  # building faster than this would not make the page any fresher.
   schedule:
-    - cron: "7,37 * * * *"
+    - cron: "7,22,37,52 * * * *"
   push:
     branches: [main]
   workflow_dispatch:
