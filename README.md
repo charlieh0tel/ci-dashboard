@@ -47,9 +47,18 @@ No dependencies beyond the standard library.
 
 ## Advisories
 
-For every repository with a `Cargo.lock`, the board checks the dependencies
-against [OSV](https://osv.dev), which carries the RustSec database -- the same
-advisories `cargo audit` reports, without needing a Rust toolchain here.
+For every repository with a lockfile, the board checks the dependencies against
+[OSV](https://osv.dev). Three are read, each against its own ecosystem:
+
+| lockfile | ecosystem | what covers it otherwise |
+|---|---|---|
+| `Cargo.lock` | crates.io | `cargo audit` in CI, Dependabot |
+| `uv.lock` | PyPI | `pip-audit` in CI only |
+| `package-lock.json` | npm | Dependabot |
+
+`uv.lock` is the reason this exists in its current form. GitHub does not list
+uv as a supported ecosystem, so Dependabot will not open a fix PR for those
+projects; outside their own CI, this board is where their advisories appear.
 
 It checks two refs, because they answer different questions:
 
