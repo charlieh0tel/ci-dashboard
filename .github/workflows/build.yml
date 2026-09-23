@@ -25,6 +25,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # build.py is the whole tool, and nothing checked it: ruff ran only when
+  # somebody remembered to run it. Against current ruff with preview rules,
+  # because that is the strictest thing likely to look at this file, and a new
+  # rule failing here is cheaper to find than a broken build.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+    - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9  # v9.0.0
+    - run: uvx ruff check --preview .
+    - run: uvx ruff format --check .
+
   build:
     runs-on: ubuntu-latest
     steps:

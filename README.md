@@ -32,6 +32,11 @@ with `actions: write`, and this page is public -- a button here would mean
 shipping that token to every visitor. A fresh build still lands behind Pages'
 ten-minute CDN cache.
 
+A `lint` job checks `build.py` with ruff on every push and every quarter hour,
+against current ruff with preview rules. It runs beside the build rather than
+before it: a style finding should not stop the board from telling you what is
+red.
+
 Run it locally the same way CI does:
 
 ```sh
