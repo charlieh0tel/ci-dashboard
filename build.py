@@ -346,6 +346,163 @@ def advisories(full_name, branch, token, pkg_cache, vuln_cache):
     return out
 
 
+REGISTRIES = {
+    "crates.io": "https://crates.io/api/v1/crates/{name}",
+    "npm": "https://registry.npmjs.org/{name}/latest",
+}
+
+
+def manifests(full_name, ref, token):
+    """(registry, package, version) for everything this repo could publish.
+
+    Read from the manifests rather than guessed from the repository name: the
+    two are often different, and a name collision on a public registry belongs
+    to whoever registered it first.
+    """
+    out = []
+    cargo = lockfile(full_name, ref, token, "Cargo.toml")
+    if cargo and "[package]" in cargo:
+        head = cargo.split("[package]", 1)[1].split("\n[", 1)[0]
+        name = re.search(r'^name = "([^"]+)"', head, re.MULTILINE)
+        version = re.search(r'^version = "([^"]+)"', head, re.MULTILINE)
+        if name and version:
+            out.append(("crates.io", name.group(1), version.group(1)))
+
+    root = lockfile(full_name, ref, token, "package.json")
+    if root:
+        try:
+            spec = json.loads(root)
+        except json.JSONDecodeError:
+            spec = {}
+        if spec.get("workspaces"):
+            # A workspace root is not itself published; its members are.
+            listing = api(f"/repos/{full_name}/contents/packages", token, {"ref": ref})
+            for entry in listing or []:
+                member = lockfile(
+                    full_name, ref, token, f"packages/{entry['name']}/package.json"
+                )
+                try:
+                    m = json.loads(member or "{}")
+                except json.JSONDecodeError:
+                    continue
+                if m.get("name") and m.get("version") and not m.get("private"):
+                    out.append(("npm", m["name"], m["version"]))
+        elif spec.get("name") and spec.get("version") and not spec.get("private"):
+            out.append(("npm", spec["name"], spec["version"]))
+    return out
+
+
+def registry_version(registry, package, full_name, cache):
+    """What the registry serves, but only if it agrees this repo owns it.
+
+    crates.io has a `weather` crate belonging to somebody else entirely.
+    Matching on name alone would report a stranger's releases as yours, so the
+    registry's own repository field has to point back here.
+    """
+    key = (registry, package)
+    if key in cache:
+        return cache[key]
+    data = api_get_json(REGISTRIES[registry].format(name=package))
+    version = repo_url = None
+    if data and registry == "crates.io" and data.get("crate"):
+        version = data["crate"].get("max_version")
+        repo_url = data["crate"].get("repository") or ""
+    elif data and registry == "npm":
+        version = data.get("version")
+        repo_url = ((data.get("repository") or {}) or {}).get("url") or ""
+    if version and full_name.lower() not in (repo_url or "").lower():
+        version = None  # same name, different project
+    cache[key] = version
+    return version
+
+
+APT_PACKAGES = (
+    "https://charlieh0tel.github.io/apt-repo/dists/bookworm/main/binary-amd64/Packages"
+)
+APT_MAP = "/repos/charlieh0tel/apt-repo/contents/packages.tsv"
+
+
+def apt_repository(token):
+    """What the APT repository actually serves, by source repository.
+
+    Two fetches, once per build: apt-repo's packages.tsv says which repository
+    a package comes from, and the published Packages index says which version
+    is installable today. A repository can ship several packages -- renogymon
+    ships four -- so the tsv name is matched as a prefix.
+    """
+    index = api_get_text(APT_PACKAGES)
+    if not index:
+        return {}
+    serving, name = {}, None
+    for line in index.splitlines():
+        if line.startswith("Package: "):
+            name = line.split(": ", 1)[1].strip()
+        elif line.startswith("Version: ") and name:
+            serving[name] = line.split(": ", 1)[1].strip()
+            name = None
+
+    data = api(APT_MAP, token)
+    if not data or not data.get("content"):
+        return {}
+    out = {}
+    for row in base64.b64decode(data["content"]).decode().splitlines():
+        if row.startswith("#") or not row.strip():
+            continue
+        parts = row.split("\t")
+        if len(parts) < 2:
+            continue
+        repo, pkg = parts[0].strip(), parts[1].strip()
+        found = {
+            n: v for n, v in serving.items() if n == pkg or n.startswith(pkg + "-")
+        }
+        if found:
+            out[repo] = found
+    return out
+
+
+def api_get_text(url):
+    req = urllib.request.Request(url, headers={"User-Agent": "ci-dashboard"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        print(f"  {url}: {e}", file=sys.stderr)
+        return None
+
+
+def upstream(repo, full_name, token, reg_cache, apt_serving):
+    """Where this repository's code has actually got to, per channel.
+
+    The GitHub release is not the answer: usbrelay-rs had a v0.1.1 release for
+    months while crates.io sat on 0.1.0. Each registry is asked directly.
+    """
+    rows = []
+    for registry, package, version in manifests(full_name, repo["branch"], token):
+        live = registry_version(registry, package, full_name, reg_cache)
+        if live:
+            rows.append(
+                {
+                    "channel": registry,
+                    "package": package,
+                    "published": live,
+                    "source": version,
+                    "behind": live != version,
+                }
+            )
+    for package, version in sorted(apt_serving.get(full_name, {}).items()):
+        rows.append(
+            {
+                "channel": "apt",
+                "package": package,
+                "published": version,
+                # The Debian revision and any CI suffix are not upstream versions.
+                "source": None,
+                "behind": False,
+            }
+        )
+    return rows
+
+
 def interesting(repo):
     return bool(repo["runs"] or repo["prs"])
 
@@ -371,7 +528,8 @@ def collect(owner, token):
     out = []
     # Shared across repositories: the same crate at the same version resolves
     # to the same answer, and these repos overlap heavily.
-    pkg_cache, vuln_cache = {}, {}
+    pkg_cache, vuln_cache, reg_cache = {}, {}, {}
+    apt_serving = apt_repository(token)
     names = [r["full_name"] for r in repos_for(owner, token)] + EXTRA_REPOS
     for full_name in sorted(set(names)):
         print(f"- {full_name}", file=sys.stderr)
@@ -391,6 +549,7 @@ def collect(owner, token):
         }
         for run in repo["runs"]:
             run["stale"] = run["finished"] < meta["pushed_at"]
+        repo["published"] = upstream(repo, full_name, token, reg_cache, apt_serving)
         repo["health"] = health(repo)
         if interesting(repo):
             out.append(repo)
@@ -515,6 +674,13 @@ h2.section .count { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .state.running { color: var(--warn); }
 .draft { font-size: 11px; color: var(--muted); border: 1px solid var(--line);
   border-radius: 4px; padding: 0 5px; }
+.pub { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
+  font-size: 13px; }
+.pub-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.chan { color: var(--muted); font-size: 12px; min-width: 76px; }
+.pkg { color: var(--ink); }
+.ver { font-variant-numeric: tabular-nums; color: var(--muted); }
+.behind { color: var(--warn); font-size: 12px; }
 .adv { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
   font-size: 13px; }
 .adv-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
@@ -579,6 +745,27 @@ REFRESH_JS = """<script>
   }, 120000);
 })();
 </script>"""
+
+
+def published_html(repo, e):
+    """What each registry serves, and whether the branch has moved past it."""
+    rows = repo.get("published") or []
+    if not rows:
+        return []
+    parts = ["<div class='pub'>"]
+    for row in rows:
+        behind = (
+            f" <span class='behind'>source is {e(row['source'])}</span>"
+            if row["behind"]
+            else ""
+        )
+        parts.append(
+            f"<div class='pub-line'><span class='chan'>{e(row['channel'])}</span>"
+            f"<span class='pkg'>{e(row['package'])}</span>"
+            f"<span class='ver'>{e(row['published'])}</span>{behind}</div>"
+        )
+    parts.append("</div>")
+    return parts
 
 
 def advisory_line(label, items, tag=None):
@@ -728,6 +915,7 @@ def render(repos, owner, now):
                     f"<span class='state {p['checks']}'>{e(p['checks'])}</span></li>"
                 )
             parts.append("</ul>")
+        parts.extend(published_html(r, e))
         parts.extend(advisory_html(r, e))
         parts.append("</section>")
     footer = (
