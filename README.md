@@ -37,6 +37,13 @@ against current ruff with preview rules. It runs beside the build rather than
 before it: a style finding should not stop the board from telling you what is
 red.
 
+Check it locally the same way CI does -- `uvx ruff`, unpinned, so you see what
+CI will see:
+
+```sh
+uvx ruff check --preview . && uvx ruff format --check .
+```
+
 Run it locally the same way CI does:
 
 ```sh
