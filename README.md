@@ -52,6 +52,26 @@ GITHUB_TOKEN=$(gh auth token) python3 build.py --out-dir _site
 
 No dependencies beyond the standard library.
 
+## Published versions
+
+Each row shows what is actually installable, per channel: crates.io, npm, and
+the APT repository. The package names come from the manifests, never from the
+repository name, and a registry's answer counts only if its own `repository`
+field points back at that repository.
+
+That check is not theoretical. `weather-rs` publishes a crate called `weather`,
+and crates.io has a `weather` crate belonging to somebody else since 2016.
+Matching on name alone would report a stranger's release as yours.
+
+The APT column reads apt-repo's own `packages.tsv` for the mapping and its
+published `Packages` index for the versions, so it reports what an `apt
+install` would fetch today. One repository can ship several packages --
+renogymon ships four -- so the mapping is matched as a prefix. Debian revisions
+(`-1`, `+ci...~git...`) are not upstream versions and are shown as they are.
+
+The GitHub release is deliberately not the source of truth here: usbrelay-rs
+carried a `v0.1.1` release for months while crates.io still served 0.1.0.
+
 ## Advisories
 
 For every repository with a lockfile, the board checks the dependencies against
