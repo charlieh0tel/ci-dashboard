@@ -67,11 +67,16 @@ For every repository with a lockfile, the board checks the dependencies against
 uv as a supported ecosystem, so Dependabot will not open a fix PR for those
 projects; outside their own CI, this board is where their advisories appear.
 
-It checks two refs, because they answer different questions:
+It checks two git refs, because they answer different questions:
 
-- **main** -- is the problem fixed?
-- **published** (the newest release tag) -- does what people can `apt install`
-  today still have it?
+- **on main** -- is the problem fixed?
+- **at release** (the newest GitHub release) -- does the code that release was
+  cut from still have it?
+
+A repository that publishes without cutting GitHub releases -- nec2-js ships
+by pushing `<package>@<version>` tags -- has no release to compare against.
+That reads as "no GitHub release to compare", which is not the same as nothing
+being published.
 
 Those diverge exactly when it matters. A merged fix does nothing for anyone
 until a tag ships it, so a repository whose branch is clean and whose release is
