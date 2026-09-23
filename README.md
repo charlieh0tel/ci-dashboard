@@ -119,9 +119,8 @@ It checks two git refs, because they answer different questions:
   cut from still have it?
 
 A repository that publishes without cutting GitHub releases -- nec2-js ships
-by pushing `<package>@<version>` tags -- has no release to compare against.
-That reads as "no GitHub release to compare", which is not the same as nothing
-being published.
+by pushing `<package>@<version>` tags -- has no release to compare against, so
+it simply has no second row. What it publishes is in the section above.
 
 Those diverge exactly when it matters. A merged fix does nothing for anyone
 until a tag ships it, so a repository whose branch is clean and whose release is
