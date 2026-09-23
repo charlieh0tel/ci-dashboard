@@ -179,9 +179,20 @@ def post_json(url, payload):
     return None
 
 
-def lockfile(full_name, ref, token):
-    """A repository's Cargo.lock at one ref, or None if it has none."""
-    data = api(f"/repos/{full_name}/contents/Cargo.lock", token, {"ref": ref})
+# Which lockfiles to read, and the OSV ecosystem each one's contents belong to.
+# uv.lock earns its place: GitHub does not list uv as a supported ecosystem, so
+# Dependabot will not open a fix PR for those projects, and this is the only
+# place their advisories show up outside their own CI.
+LOCKFILES = (
+    ("Cargo.lock", "crates.io"),
+    ("uv.lock", "PyPI"),
+    ("package-lock.json", "npm"),
+)
+
+
+def lockfile(full_name, ref, token, name="Cargo.lock"):
+    """One lockfile at one ref, or None if the repository has no such file."""
+    data = api(f"/repos/{full_name}/contents/{name}", token, {"ref": ref})
     if not data:
         return None
     if data.get("content"):
@@ -194,10 +205,27 @@ def lockfile(full_name, ref, token):
         return resp.read().decode("utf-8", "replace")
 
 
-def packages(lock_text):
-    """(name, version) for every crate pinned in a Cargo.lock."""
+def packages(lock_text, lock_name):
+    """(name, version) for everything pinned in a lockfile.
+
+    Cargo.lock and uv.lock are both TOML with the same [[package]] shape, so
+    they parse the same way. package-lock.json is JSON, keyed by install path.
+    """
     if not lock_text:
         return []
+    if lock_name.endswith(".json"):
+        try:
+            data = json.loads(lock_text)
+        except json.JSONDecodeError:
+            return []
+        out = []
+        for path, spec in (data.get("packages") or {}).items():
+            # "" is the project itself; the rest are node_modules/<name>, which
+            # nests for transitive copies -- the last segment is the package.
+            if not path or not isinstance(spec, dict) or "version" not in spec:
+                continue
+            out.append((path.split("node_modules/")[-1], spec["version"]))
+        return out
     out = []
     for block in lock_text.split("[[package]]")[1:]:
         name = re.search(r'^name = "([^"]+)"', block, re.MULTILINE)
@@ -208,14 +236,14 @@ def packages(lock_text):
 
 
 def osv_lookup(pkgs, cache):
-    """Advisory ids per (name, version), asking OSV only about what is new."""
+    """Advisory ids per (ecosystem, name, version), asking OSV only what is new."""
     unknown = sorted({p for p in pkgs if p not in cache})
     for i in range(0, len(unknown), OSV_BATCH):
         chunk = unknown[i : i + OSV_BATCH]
         body = {
             "queries": [
-                {"package": {"name": n, "ecosystem": "crates.io"}, "version": v}
-                for n, v in chunk
+                {"package": {"name": n, "ecosystem": eco}, "version": v}
+                for eco, n, v in chunk
             ]
         }
         results = post_json(f"{OSV_API}/querybatch", body).get("results", [])
@@ -224,7 +252,7 @@ def osv_lookup(pkgs, cache):
     found = {}
     for pkg in pkgs:
         for vid in cache.get(pkg, []):
-            found.setdefault(vid, set()).add(f"{pkg[0]} {pkg[1]}")
+            found.setdefault(vid, set()).add(f"{pkg[1]} {pkg[2]}")
     return found
 
 
@@ -284,21 +312,33 @@ def advisories(full_name, branch, token, pkg_cache, vuln_cache):
     They answer different questions: the branch says whether the problem is
     fixed, the release says whether what people can install still has it.
     """
-    out = {"main": [], "published": [], "tag": None, "has_lock": False}
-    main_lock = lockfile(full_name, branch, token)
-    if main_lock is None:
+    out = {"main": [], "published": [], "tag": None, "has_lock": False, "locks": []}
+
+    def pinned(ref):
+        """Everything pinned at a ref, across every lockfile the repo has."""
+        found = []
+        for name, ecosystem in LOCKFILES:
+            text = lockfile(full_name, ref, token, name)
+            if text is None:
+                continue
+            if name not in out["locks"]:
+                out["locks"].append(name)
+            found += [(ecosystem, n, v) for n, v in packages(text, name)]
+        return found
+
+    on_branch = pinned(branch)
+    if not on_branch:
         return out
     out["has_lock"] = True
-    for vid, crates in osv_lookup(packages(main_lock), pkg_cache).items():
-        out["main"].append({**osv_detail(vid, vuln_cache), "crates": sorted(crates)})
+    for vid, pkgs in osv_lookup(on_branch, pkg_cache).items():
+        out["main"].append({**osv_detail(vid, vuln_cache), "crates": sorted(pkgs)})
 
     release = api(f"/repos/{full_name}/releases/latest", token)
     if release:
         out["tag"] = release["tag_name"]
-        rel_lock = lockfile(full_name, release["tag_name"], token)
-        for vid, crates in osv_lookup(packages(rel_lock), pkg_cache).items():
+        for vid, pkgs in osv_lookup(pinned(release["tag_name"]), pkg_cache).items():
             out["published"].append(
-                {**osv_detail(vid, vuln_cache), "crates": sorted(crates)}
+                {**osv_detail(vid, vuln_cache), "crates": sorted(pkgs)}
             )
     for key in ("main", "published"):
         out[key] = dedupe(out[key])
