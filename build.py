@@ -470,6 +470,28 @@ def api_get_text(url):
         return None
 
 
+def newest_tag(full_name, token, release_tag):
+    """The tag a reader would call the latest one.
+
+    The release tag when there is a release. Otherwise the newest tag by commit
+    date: nec2-js publishes by pushing <package>@<version> tags and cuts no
+    releases, and the order /tags returns is not documented as chronological,
+    so the dates are asked for rather than assumed. Capped at five tags, which
+    finds the newest without paying for a full listing.
+    """
+    if release_tag:
+        return release_tag, "release"
+    best, best_when = None, ""
+    for tag in api(f"/repos/{full_name}/tags", token, {"per_page": 5}) or []:
+        commit = api(f"/repos/{full_name}/commits/{tag['commit']['sha']}", token)
+        when = (((commit or {}).get("commit") or {}).get("committer") or {}).get(
+            "date", ""
+        )
+        if when > best_when:
+            best, best_when = tag["name"], when
+    return best, "tag"
+
+
 def upstream(repo, full_name, token, reg_cache, apt_serving):
     """Where this repository's code has actually got to, per channel.
 
@@ -477,18 +499,30 @@ def upstream(repo, full_name, token, reg_cache, apt_serving):
     months while crates.io sat on 0.1.0. Each registry is asked directly.
     """
     rows = []
+    tag, kind = newest_tag(full_name, token, repo["advisories"].get("tag"))
+    if tag:
+        rows.append(
+            {
+                "channel": "newest " + kind,
+                "package": tag,
+                "published": "",
+                "source": None,
+                "behind": False,
+            }
+        )
     for registry, package, version in manifests(full_name, repo["branch"], token):
         live = registry_version(registry, package, full_name, reg_cache)
-        if live:
-            rows.append(
-                {
-                    "channel": registry,
-                    "package": package,
-                    "published": live,
-                    "source": version,
-                    "behind": live != version,
-                }
-            )
+        rows.append(
+            {
+                "channel": registry,
+                "package": package,
+                # A package the manifest declares but the registry does not
+                # serve is worth saying out loud, not omitting.
+                "published": live or "not published",
+                "source": version,
+                "behind": bool(live) and live != version,
+            }
+        )
     for package, version in sorted(apt_serving.get(full_name, {}).items()):
         rows.append(
             {
@@ -681,6 +715,7 @@ h2.section .count { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .pkg { color: var(--ink); }
 .ver { font-variant-numeric: tabular-nums; color: var(--muted); }
 .behind { color: var(--warn); font-size: 12px; }
+.same { color: var(--pass); font-size: 12px; }
 .adv { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
   font-size: 13px; }
 .adv-line { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
@@ -754,11 +789,17 @@ def published_html(repo, e):
         return []
     parts = ["<div class='pub'>"]
     for row in rows:
-        behind = (
-            f" <span class='behind'>source is {e(row['source'])}</span>"
-            if row["behind"]
-            else ""
-        )
+        if row["behind"]:
+            note = f" <span class='behind'>source is {e(row['source'])}</span>"
+        elif row["source"] and row["published"] not in ("", "not published"):
+            note = " <span class='same'>= source</span>"
+        elif row["source"]:
+            # Declared by the manifest, absent from the registry: saying it
+            # matches the source would be nonsense.
+            note = f" <span class='behind'>source is {e(row['source'])}</span>"
+        else:
+            note = ""
+        behind = note
         parts.append(
             f"<div class='pub-line'><span class='chan'>{e(row['channel'])}</span>"
             f"<span class='pkg'>{e(row['package'])}</span>"
