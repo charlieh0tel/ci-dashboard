@@ -54,8 +54,14 @@ No dependencies beyond the standard library.
 
 ## Published versions
 
-Each row shows what is actually installable, per channel: crates.io, npm, and
-the APT repository. The package names come from the manifests, never from the
+Each repository shows the newest tag it carries, then what is actually
+installable per channel: crates.io, npm, and the APT repository. The tag row
+says whether it is a GitHub release or a bare tag, so a version on a registry
+can be read against the tag that produced it.
+
+Registry rows are annotated with the manifest: `= source` when they agree,
+`source is X` when the branch has moved on, and `not published` for a package
+the manifest declares that no registry serves. The package names come from the manifests, never from the
 repository name, and a registry's answer counts only if its own `repository`
 field points back at that repository.
 
