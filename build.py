@@ -365,7 +365,11 @@ def manifests(full_name, ref, token):
         head = cargo.split("[package]", 1)[1].split("\n[", 1)[0]
         name = re.search(r'^name = "([^"]+)"', head, re.MULTILINE)
         version = re.search(r'^version = "([^"]+)"', head, re.MULTILINE)
-        if name and version:
+        # publish = false says this crate is not for a registry. Cargo refuses
+        # to publish it, and a board reporting "not published" for it would be
+        # reporting an intention nobody has.
+        wanted = not re.search(r"^publish = false", head, re.MULTILINE)
+        if name and version and wanted:
             out.append(("crates.io", name.group(1), version.group(1)))
 
     root = lockfile(full_name, ref, token, "package.json")
