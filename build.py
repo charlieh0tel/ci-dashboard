@@ -598,13 +598,16 @@ def advisory_html(repo, e):
     if not adv["has_lock"]:
         return []
     parts = ["<div class='adv'>"]
-    parts.append(advisory_line("main", adv["main"]))
+    parts.append(advisory_line("on main", adv["main"]))
     if adv["tag"]:
-        parts.append(advisory_line("published", adv["published"], e(adv["tag"])))
+        parts.append(advisory_line("at release", adv["published"], e(adv["tag"])))
     else:
+        # Not every repository cuts GitHub releases: nec2-js ships by pushing
+        # <package>@<version> tags. "No release" there means no ref to compare
+        # against, not that nothing is published.
         parts.append(
-            "<div class='adv-line'><span class='adv-label'>published</span>"
-            "<span class='adv-clean'>no release</span></div>"
+            "<div class='adv-line'><span class='adv-label'>at release</span>"
+            "<span class='adv-clean'>no GitHub release to compare</span></div>"
         )
     # The gap is the actionable part: fixed on the branch, still out there in
     # the last release, and only a new tag closes it.
@@ -612,8 +615,8 @@ def advisory_html(repo, e):
     out_there = real(adv["published"])
     if out_there and not [a for a in out_there if a["id"] in fixed]:
         parts.append(
-            "<div class='stale'>Fixed on the branch but not in the release — "
-            "cutting a tag ships the fix.</div>"
+            "<div class='stale'>Fixed on main but not in the newest GitHub "
+            "release — cutting a tag ships the fix.</div>"
         )
     shown = real(adv["published"]) or real(adv["main"])
     if shown:
