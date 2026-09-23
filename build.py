@@ -86,26 +86,22 @@ def repos_for(owner, token):
 
 
 def latest_runs(full_name, branch, token):
-    """The most recent run of each workflow on the default branch."""
-    data = api(
-        f"/repos/{full_name}/actions/runs",
-        token,
-        {"branch": branch, "per_page": 50, "exclude_pull_requests": "true"},
-    )
-    if not data:
-        return []
-    seen, runs = set(), []
-    for run in data.get("workflow_runs", []):
-        # Dependabot's own update jobs land here as `dynamic` runs, one per
-        # dependency it examines. They are not this repository's CI, and they
-        # fail routinely when an advisory has no fix Dependabot can apply --
-        # which would paint a repo red for the one thing it cannot do anything
-        # about.
-        if run.get("event") == "dynamic":
-            continue
-        if run["workflow_id"] in seen or run["status"] != "completed":
-            continue
-        seen.add(run["workflow_id"])
+    """The most recent run of each workflow, wherever it ran.
+
+    Filtering to the default branch hid whole workflows: nec2-js releases by
+    pushing <package>@<version> tags, so its Release workflow never runs on
+    main and the only chip it ever showed was a stray workflow_dispatch from
+    August that failed. Tag runs count, and the chip says which ref it was.
+    """
+    runs_on_branch = _runs(full_name, token, {"branch": branch})
+    newest = {r["workflow_id"]: r for r in reversed(runs_on_branch)}
+    for run in _runs(full_name, token, {}):
+        current = newest.get(run["workflow_id"])
+        if not current or run["updated_at"] > current["updated_at"]:
+            newest[run["workflow_id"]] = run
+
+    runs = []
+    for run in newest.values():
         runs.append(
             {
                 "name": run["name"],
@@ -113,9 +109,25 @@ def latest_runs(full_name, branch, token):
                 "url": run["html_url"],
                 "finished": run["updated_at"],
                 "event": run["event"],
+                # Named only when it is not the default branch, so a release
+                # chip says which tag produced it.
+                "ref": None if run["head_branch"] == branch else run["head_branch"],
             }
         )
     return sorted(runs, key=lambda r: r["name"].lower())
+
+
+def _runs(full_name, token, extra):
+    """Completed runs, newest first, minus the ones that are not this repo's CI."""
+    params = {"per_page": 50, "exclude_pull_requests": "true", **extra}
+    data = api(f"/repos/{full_name}/actions/runs", token, params)
+    return [
+        run
+        for run in (data or {}).get("workflow_runs", [])
+        # Dependabot's own update jobs arrive as `dynamic` runs, one per
+        # dependency examined, and fail routinely on advisories it cannot fix.
+        if run.get("event") != "dynamic" and run["status"] == "completed"
+    ]
 
 
 def open_prs(full_name, token):
@@ -874,10 +886,10 @@ def render(repos, owner, now):
         "<!DOCTYPE html>",
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
-        f"<title>CI status — {e(owner)}</title>",
+        f"<title>{e(owner)}'s CI Status</title>",
         f"<style>{CSS}</style></head><body><div class='wrap'>",
         (
-            "<div class='top'><h1>CI status</h1>"
+            f"<div class='top'><h1>{e(owner)}'s CI Status</h1>"
             # Links rather than fires: triggering a workflow needs a token with
             # actions:write, and this page is public, so the only way to make
             # the button real is to put a credential in the browser.
@@ -887,8 +899,8 @@ def render(repos, owner, now):
         ),
         (
             f"<p class='sub'>Vulnerable releases and red builds first, then "
-            f"anything awaiting review. Default-branch workflow results and open pull requests "
-            f"across {len(repos)} active repositories. "
+            f"anything awaiting review. Latest run of each workflow, wherever it "
+            f"ran, and open pull requests across {len(repos)} active repositories. "
             f"Rebuilt {e(now.strftime('%Y-%m-%d %H:%M UTC'))} "
             "(<span id='age'></span>).</p>"
         ),
@@ -944,9 +956,10 @@ def render(repos, owner, now):
                     if run["stale"]
                     else ""
                 )
+                ref = f" @{e(run['ref'])}" if run.get("ref") else ""
                 parts.append(
                     f"<a class='chip {cls}' href='{e(run['url'])}'{title}>"
-                    f"{e(run['name'])} · {e(run['conclusion'] or 'n/a')}"
+                    f"{e(run['name'])} · {e(run['conclusion'] or 'n/a')}{ref}"
                     f"{' (stale)' if run['stale'] else ''}</a>"
                 )
             parts.append("</div>")
