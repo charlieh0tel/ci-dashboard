@@ -138,6 +138,13 @@ which is how `PAARA-org/w6otx` gets on. A repository still has to have either CI
 or an open pull request to earn a row, or the board fills up with dormant
 repositories that will never show anything.
 
+Each repository shows the newest run of every workflow it has, wherever that
+run happened. Filtering to the default branch would hide a workflow that only
+runs on tags: nec2-js releases by pushing `<package>@<version>` tags, so its
+Release workflow never touches main, and the only chip it ever showed was a
+stray `workflow_dispatch` from August that failed. A chip from another ref says
+which one, as `Release - success @necpp-wasm@0.2.3`.
+
 Rows fall into three labelled sections, so the order is visible rather than
 inferred:
 
