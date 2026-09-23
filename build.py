@@ -847,16 +847,12 @@ def advisory_html(repo, e):
         return []
     parts = ["<div class='adv'>"]
     parts.append(advisory_line("on main", adv["main"]))
+    # Only when there is a release to compare against. Five repositories here
+    # never cut one -- the uv projects do not release, nec2-js ships by tag --
+    # so the row said the same non-fact about them on every build. What they
+    # publish is in the block above.
     if adv["tag"]:
         parts.append(advisory_line("at release", adv["published"], e(adv["tag"])))
-    else:
-        # Not every repository cuts GitHub releases: nec2-js ships by pushing
-        # <package>@<version> tags. "No release" there means no ref to compare
-        # against, not that nothing is published.
-        parts.append(
-            "<div class='adv-line'><span class='adv-label'>at release</span>"
-            "<span class='adv-clean'>no GitHub release to compare</span></div>"
-        )
     # The gap is the actionable part: fixed on the branch, still out there in
     # the last release, and only a new tag closes it.
     fixed = {a["id"] for a in real(adv["main"])}
