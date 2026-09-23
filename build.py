@@ -978,24 +978,81 @@ def render(repos, owner, now):
     return "\n".join(parts)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--owner", default="charlieh0tel")
-    ap.add_argument("--out-dir", default=os.path.dirname(os.path.abspath(__file__)))
-    args = ap.parse_args()
+# status.json is the contract between the two halves, not a by-product of
+# rendering. Bump this when its shape changes in a way a reader would notice.
+SCHEMA = 1
 
+
+def do_collect(owner, out_dir):
+    """Ask the world what is true, and write it down. Network, no HTML."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         sys.exit("GITHUB_TOKEN is required (the Actions token is enough)")
-
     now = dt.datetime.now(dt.timezone.utc)
-    repos = collect(args.owner, token)
-    os.makedirs(args.out_dir, exist_ok=True)
-    with open(os.path.join(args.out_dir, "status.json"), "w") as f:
-        json.dump({"generated": now.isoformat(), "repos": repos}, f, indent=2)
-    with open(os.path.join(args.out_dir, "index.html"), "w") as f:
-        f.write(render(repos, args.owner, now))
-    print(f"{len(repos)} repositories written to {args.out_dir}", file=sys.stderr)
+    repos = collect(owner, token)
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "status.json")
+    with open(path, "w") as f:
+        json.dump(
+            {
+                "schema": SCHEMA,
+                "generated": now.isoformat(),
+                "owner": owner,
+                "repos": repos,
+            },
+            f,
+            indent=2,
+        )
+    print(f"{len(repos)} repositories written to {path}", file=sys.stderr)
+    return path
+
+
+def do_render(status_path, out_dir):
+    """Turn what was written down into a page. No network."""
+    with open(status_path) as f:
+        data = json.load(f)
+    if data.get("schema") != SCHEMA:
+        sys.exit(
+            f"{status_path} is schema {data.get('schema')}, this build.py reads {SCHEMA}"
+        )
+    now = dt.datetime.fromisoformat(data["generated"])
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "index.html")
+    with open(path, "w") as f:
+        f.write(render(data["repos"], data.get("owner", "charlieh0tel"), now))
+    print(f"{len(data['repos'])} repositories rendered to {path}", file=sys.stderr)
+
+
+def main():
+    # Declared once and attached to the top level and to each subcommand, so
+    # `render --out-dir X` works as readily as `--out-dir X render`.
+    # SUPPRESS rather than a real default: a subparser re-declaring an option
+    # overwrites whatever the top level parsed, so `--out-dir X render` would
+    # quietly write to the default directory instead of X.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--owner", default=argparse.SUPPRESS)
+    common.add_argument("--out-dir", default=argparse.SUPPRESS)
+    ap = argparse.ArgumentParser(
+        parents=[common],
+        description="Collect the fleet's status, and render it. With no "
+        "subcommand it does both, which is what CI runs.",
+    )
+    sub = ap.add_subparsers(dest="command")
+    sub.add_parser("collect", parents=[common], help="write status.json (network)")
+    render_cmd = sub.add_parser(
+        "render", parents=[common], help="write index.html from status.json"
+    )
+    render_cmd.add_argument("status", nargs="?")
+    args = ap.parse_args()
+    owner = getattr(args, "owner", "charlieh0tel")
+    out_dir = getattr(args, "out_dir", os.path.dirname(os.path.abspath(__file__)))
+
+    if args.command == "collect":
+        do_collect(owner, out_dir)
+    elif args.command == "render":
+        do_render(args.status or os.path.join(out_dir, "status.json"), out_dir)
+    else:
+        do_render(do_collect(owner, out_dir), out_dir)
 
 
 if __name__ == "__main__":

@@ -45,10 +45,16 @@ jobs:
     # GITHUB_TOKEN is enough to read public repositories. Set a DASHBOARD_TOKEN
     # secret (a fine-grained PAT, read-only) only if you ever want private ones
     # on the board -- and note that Pages is public, so their names would be too.
-    - name: Build the page
+    # Two steps, because they fail for different reasons: collect fails when
+    # the API does, render fails when this repository's own code does. The
+    # step name says which without reading the log.
+    - name: Collect
       env:
         GITHUB_TOKEN: ${{ secrets.DASHBOARD_TOKEN || secrets.GITHUB_TOKEN }}
-      run: python3 build.py --owner charlieh0tel --out-dir _site
+      run: python3 build.py collect --owner charlieh0tel --out-dir _site
+
+    - name: Render
+      run: python3 build.py render --out-dir _site
 
     - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6
     - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5

@@ -13,7 +13,20 @@ this page is a convenience; the CI half is the part you cannot get anywhere else
 
 ## How it works
 
-`build.py` queries the API and writes `index.html` and `status.json`. A workflow
+Two halves with a file between them. `build.py collect` asks the API what is
+true and writes `status.json`; `build.py render` turns that file into
+`index.html` and touches no network. Run with no subcommand it does both,
+which is what CI does in two steps.
+
+```sh
+GITHUB_TOKEN=$(gh auth token) python3 build.py collect --out-dir _site
+python3 build.py render --out-dir _site      # no token, no network, instant
+```
+
+That split is worth having because rendering is where the iterating happens: a
+layout change costs a 38ms re-render rather than a four-minute crawl, and the
+same file can feed anything else that wants the data. `status.json` carries a
+`schema` field, and `render` refuses a file it does not recognise. A workflow
 runs it every 15 minutes and deploys the result to Pages. The page is completely
 static: it makes no API calls of its own, because a browser hitting the GitHub
 API is capped at 60 requests an hour per visitor, and a page that needs a token
