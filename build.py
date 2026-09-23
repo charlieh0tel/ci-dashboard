@@ -598,7 +598,11 @@ def collect(owner, token):
             ),
         }
         for run in repo["runs"]:
-            run["stale"] = run["finished"] < meta["pushed_at"]
+            # Only default-branch runs go stale. A tag run describes the tag,
+            # and stays true however far main moves afterwards -- marking a
+            # successful release stale because someone merged a README fix
+            # since would be telling people to distrust a result that is fine.
+            run["stale"] = not run["ref"] and run["finished"] < meta["pushed_at"]
         repo["published"] = upstream(repo, full_name, token, reg_cache, apt_serving)
         repo["health"] = health(repo)
         if interesting(repo):
