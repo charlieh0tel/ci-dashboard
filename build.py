@@ -889,7 +889,8 @@ def render(repos, owner, now):
             # Links rather than fires: triggering a workflow needs a token with
             # actions:write, and this page is public, so the only way to make
             # the button real is to put a credential in the browser.
-            "<a class='rebuild' href='https://github.com/"
+            "<a class='rebuild' target='_blank' rel='noopener' "
+            "href='https://github.com/"
             f"{e(owner)}/ci-dashboard/actions/workflows/build.yml'>Rebuild now "
             "&rarr;</a></div>"
         ),
