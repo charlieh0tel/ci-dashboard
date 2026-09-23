@@ -74,7 +74,13 @@ can be read against the tag that produced it.
 
 Registry rows are annotated with the manifest: `= source` when they agree,
 `source is X` when the branch has moved on, and `not published` for a package
-the manifest declares that no registry serves. The package names come from the manifests, never from the
+the manifest declares that no registry serves.
+
+`not published` is a signal, not noise -- it is what would have shown
+usbrelay-rs sitting at 0.1.1 unreleased for months. A crate that is never
+going to a registry says so in its own manifest with `publish = false`, which
+also makes `cargo publish` refuse, and it drops off the board. npm's `private:
+true` does the same for a package. The package names come from the manifests, never from the
 repository name, and a registry's answer counts only if its own `repository`
 field points back at that repository.
 
