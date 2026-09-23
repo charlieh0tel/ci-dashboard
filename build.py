@@ -92,12 +92,16 @@ def latest_runs(full_name, branch, token):
     pushing <package>@<version> tags, so its Release workflow never runs on
     main and the only chip it ever showed was a stray workflow_dispatch from
     August that failed. Tag runs count, and the chip says which ref it was.
+
+    Newest means created, not updated: re-running an old run bumps its
+    updated_at. ee_stuff showed a red Pages build because an older commit's
+    failed run was re-run after main's fix had already gone green.
     """
     runs_on_branch = _runs(full_name, token, {"branch": branch})
     newest = {r["workflow_id"]: r for r in reversed(runs_on_branch)}
     for run in _runs(full_name, token, {}):
         current = newest.get(run["workflow_id"])
-        if not current or run["updated_at"] > current["updated_at"]:
+        if not current or run["created_at"] > current["created_at"]:
             newest[run["workflow_id"]] = run
 
     runs = []
