@@ -180,12 +180,16 @@ release is everyone else's.
 
 ## Private repositories
 
-They are deliberately absent. GitHub Pages is public even when served from a
-private repository, so putting them on the board would publish their names,
-branches and failure messages to anyone with the URL. If you want them anyway,
-set a `DASHBOARD_TOKEN` secret (fine-grained PAT, read-only on contents,
-metadata, actions and pull requests), drop the `private` filter in
-`repos_for()`, and understand what becomes public.
+They are included, and that is a deliberate choice with a consequence: **this
+page is public**. GitHub Pages serves it to anyone with the URL, logged in or
+not, so a private repository's name, branches, workflow names, tags and
+failure messages are published the moment it appears here.
+
+Seeing them requires `DASHBOARD_TOKEN`: a fine-grained PAT with read access to
+the repositories, set as a secret on this repository. The Actions token cannot
+list anyone's private repositories, so without that secret the board quietly
+falls back to public repositories only -- which is a safe failure, but it does
+mean an empty private section means "no token", not "nothing wrong".
 
 ## Cost and freshness
 

@@ -69,20 +69,40 @@ def api(path, token, params=None):
 
 
 def repos_for(owner, token):
-    out, page = [], 1
-    while True:
-        batch = api(
-            f"/users/{owner}/repos",
-            token,
-            {"per_page": 100, "page": page, "type": "owner"},
-        )
-        if not batch:
+    """Every repository of the owner's this token can see.
+
+    /user/repos is asked first because it is the only listing that includes
+    private repositories, and it only works when the token belongs to the
+    owner -- the Actions token does not, so CI needs DASHBOARD_TOKEN set to a
+    PAT with read access. Without it this falls back to the public listing and
+    the board is simply public-only, rather than failing.
+    """
+    out = []
+    for path, params in (
+        ("/user/repos", {"affiliation": "owner"}),
+        (f"/users/{owner}/repos", {"type": "owner"}),
+    ):
+        page = 1
+        while True:
+            batch = api(path, token, {"per_page": 100, "page": page, **params})
+            if not batch:
+                break
+            out.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        if out:
             break
-        out.extend(batch)
-        if len(batch) < 100:
-            break
-        page += 1
-    return [r for r in out if not r["fork"] and not r["archived"] and not r["private"]]
+
+    seen, repos = set(), []
+    for r in out:
+        if r["owner"]["login"].lower() != owner.lower():
+            continue
+        if r["fork"] or r["archived"] or r["full_name"] in seen:
+            continue
+        seen.add(r["full_name"])
+        repos.append(r)
+    return repos
 
 
 def latest_runs(full_name, branch, token):
