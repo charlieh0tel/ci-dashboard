@@ -727,7 +727,7 @@ def render(repos, owner, now):
             parts.append("</ul>")
         parts.extend(advisory_html(r, e))
         parts.append("</section>")
-    parts.append(
+    footer = (
         "<footer>Built by <a href='https://github.com/"
         f"{e(owner)}/ci-dashboard'>ci-dashboard</a>. "
         "Public, non-fork repositories with CI or an open pull request. "
@@ -736,8 +736,13 @@ def render(repos, owner, now):
         "not see. Yanked versions are registry state rather than advisories, so "
         "they appear only in <code>cargo audit</code>.</footer>"
     )
-    parts.append(REFRESH_JS.replace("__GENERATED__", now.isoformat()))
-    parts.append("</div></body></html>")
+    parts.extend(
+        (
+            footer,
+            REFRESH_JS.replace("__GENERATED__", now.isoformat()),
+            "</div></body></html>",
+        )
+    )
     return "\n".join(parts)
 
 
