@@ -1,0 +1,5 @@
+# build.py runs on the system python3, which can be 3.10 (Ubuntu 22.04).
+# Without this, ruff assumes its own default target, and when that moved to
+# 3.11 it started suggesting dt.UTC and a bare fromisoformat("...Z"), both of
+# which fail on 3.10.
+target-version = "py310"

@@ -63,7 +63,8 @@ Run it locally the same way CI does:
 GITHUB_TOKEN=$(gh auth token) python3 build.py --out-dir _site
 ```
 
-No dependencies beyond the standard library.
+No dependencies beyond the standard library, and Python 3.10 or newer.
+`ruff.toml` pins ruff's target to 3.10 so it never suggests something newer.
 
 ## Published versions
 
