@@ -881,10 +881,11 @@ def advisory_html(repo, e):
     return parts
 
 
-# Inlined as a data URI so the page stays one file, and coloured by the same
-# test as the summary counts so a pinned tab says whether anything is red. The
-# colours sit between the light and dark palettes because a tab strip follows
-# the browser theme, not the page's. "#" would end a data URI, hence %23.
+# Inlined as a data URI so the page stays one file, and red only when a build
+# is failing, so a pinned tab says whether CI needs attention. Releases with
+# advisories deliberately do not turn it red. The colours sit between the
+# light and dark palettes because a tab strip follows the browser theme, not
+# the page's. "#" would end a data URI, hence %23.
 FAVICON = (
     "<link rel='icon' href=\"data:image/svg+xml,"
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'>"
@@ -902,7 +903,7 @@ def render(repos, owner, now):
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{e(owner)}'s CI Status</title>",
-        FAVICON.format("d8574a" if failing or shipping else "3f9a62"),
+        FAVICON.format("d8574a" if failing else "3f9a62"),
         f"<style>{CSS}</style></head><body><div class='wrap'>",
         (
             f"<div class='top'><h1>{e(owner)}'s CI Status</h1>"
