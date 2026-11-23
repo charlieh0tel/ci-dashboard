@@ -57,6 +57,23 @@ CI will see:
 uvx ruff check --preview . && uvx ruff format --check .
 ```
 
+Pull requests get their own workflow, `pr.yml`, which does everything short of
+deploying: the same ruff commands, `actionlint` over the workflows, a render of
+a committed fixture, and a live `collect` and `render` into a scratch
+directory. The fixture is what makes the render check repeatable -- the live
+data changes hourly, `tests/status-fixture.json` does not:
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+The live run on a pull request collects four repositories, not the account,
+using `collect --repo OWNER/NAME` (repeatable). A full crawl is about 700 API
+requests and the Actions token gets 1,000 an hour for the whole repository, so
+a pull request that crawled everything would leave the deploying build that
+follows a merge rate-limited -- and `collect` reads a refused request as
+nothing found.
+
 Run it locally the same way CI does:
 
 ```sh
