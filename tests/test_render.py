@@ -2,7 +2,8 @@
 
 `render` reads only status.json, so it can be checked without the network or
 a token: tests/status-fixture.json is a hand-written file in the shape
-`collect` writes, with one repository for each thing the page distinguishes.
+`collect` writes, with one repository for each thing the page distinguishes,
+including one that could not be checked.
 The live `collect` run in CI cannot do this job, because what it sees changes
 from hour to hour.
 
@@ -73,6 +74,24 @@ class Page(HTMLParser):
         return [" ".join(el["text"].split()) for el in self.find(tag, cls)]
 
 
+def render_data(data):
+    """The page for a status.json that exists only in this test."""
+    with tempfile.TemporaryDirectory() as out_dir:
+        status = os.path.join(out_dir, "status.json")
+        with open(status, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        result = run_render(status, out_dir)
+        if result.returncode:
+            raise AssertionError(f"render failed:\n{result.stderr}")
+        with open(os.path.join(out_dir, "index.html"), encoding="utf-8") as f:
+            return f.read()
+
+
+def load_fixture():
+    with open(FIXTURE, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def run_render(status_path, out_dir):
     return subprocess.run(
         [sys.executable, BUILD, "render", status_path, "--out-dir", out_dir],
@@ -108,26 +127,86 @@ class RenderFixture(unittest.TestCase):
 
     def test_summary_counts(self):
         # Failing, open pull requests, releases with advisories, watched.
-        self.assertEqual(self.page.texts("b"), ["1", "2", "1", "5"])
-        self.assertIn("5repos watched", self.page.texts("div"))
+        # The row that could not be checked is watched and counted nowhere else.
+        self.assertEqual(self.page.texts("b")[1:], ["1", "2", "1", "6"])
+        self.assertIn("6repos watched", self.page.texts("div"))
 
     def test_sections_and_repositories_in_order(self):
         self.assertEqual(
             self.page.texts("h2", "section"),
-            ["Needs attention (2)", "Open pull requests (1)", "Quiet (2)"],
+            [
+                "Could not check (1)",
+                "Needs attention (2)",
+                "Open pull requests (1)",
+                "Quiet (2)",
+            ],
         )
         # The owner's repositories lose their prefix; a guest keeps its own.
         headings = [el["text"] for el in self.page.find("h2") if not el["attrs"]]
         self.assertEqual(
-            headings, ["shipping", "broken", "reviewing", "other-org/guest", "quiet"]
+            headings,
+            [
+                "unreachable",
+                "shipping",
+                "broken",
+                "reviewing",
+                "other-org/guest",
+                "quiet",
+            ],
         )
 
     def test_only_the_failing_repository_is_red(self):
         classes = [el["attrs"]["class"] for el in self.page.find("section", "repo")]
         self.assertEqual(classes.count("repo failing"), 1)
         self.assertEqual(classes.count("repo passing"), 4)
+        self.assertEqual(classes.count("repo unchecked"), 1)
         # The favicon follows the builds, so one red repository turns it red.
         self.assertIn("fill='%23d8574a'", self.html)
+
+    def test_unchecked_is_not_rendered_as_nothing_found(self):
+        self.assertEqual(
+            self.page.texts("p"),
+            [
+                self.page.texts("p", "sub")[0],
+                (
+                    "Incomplete. 1 of 6 repositories could not be checked: rate "
+                    "limited (1). Those rows are marked; they are not passing, "
+                    "failing or quiet."
+                ),
+                (
+                    "The APT repository could not be read (network error), so "
+                    "APT versions are missing from every row."
+                ),
+            ],
+        )
+        self.assertEqual(len(self.page.find("div", "warn")), 1)
+        self.assertEqual(
+            self.page.texts("div", "why"), ["Could not check: rate limited"]
+        )
+        # Nothing else in the row: no chips, no "pushed", no empty lists.
+        row = self.page.find("section", "unchecked")[0]
+        self.assertEqual(
+            "".join(row["text"].split()), "unreachableCouldnotcheck:ratelimited"
+        )
+
+    def test_favicon_is_amber_when_only_unchecked(self):
+        data = load_fixture()
+        data["repos"] = [r for r in data["repos"] if r["health"] != "failing"]
+        self.assertIn("fill='%23c08a1e'", render_data(data))
+        # Something other than a repository going unread is enough.
+        data["repos"] = [r for r in data["repos"] if not r["unchecked"]]
+        self.assertIn("fill='%23c08a1e'", render_data(data))
+
+    def test_nothing_unchecked_means_no_warning(self):
+        data = load_fixture()
+        data["unchecked"] = []
+        data["repos"] = [
+            r for r in data["repos"] if not r["unchecked"] and r["health"] != "failing"
+        ]
+        page = render_data(data)
+        self.assertIn("fill='%233f9a62'", page)
+        self.assertNotIn("class='warn'", page)
+        self.assertNotIn("Could not check", page)
 
     def test_run_chips(self):
         chips = {
@@ -151,12 +230,12 @@ class RenderFixture(unittest.TestCase):
         self.assertEqual(self.page.texts("span", "draft"), ["draft"])
 
     def test_api_text_is_escaped(self):
-        with open(FIXTURE, encoding="utf-8") as f:
-            title = json.load(f)["repos"][2]["prs"][0]["title"]
+        repos = {r["name"]: r for r in load_fixture()["repos"]}
+        title = repos["example/reviewing"]["prs"][0]["title"]
         self.assertIn("<b>", title)
-        # No <b> element made it onto the page from the title; the summary
-        # counts are the only bold text there is.
-        self.assertEqual(len(self.page.find("b")), 4)
+        # No <b> element made it onto the page from the title; the warning
+        # and the four summary counts are the only bold text there is.
+        self.assertEqual(len(self.page.find("b")), 5)
         link = [el for el in self.page.find("a") if el["attrs"]["href"].endswith("/7")]
         self.assertEqual([el["text"] for el in link], [title])
 
@@ -191,8 +270,7 @@ class RenderFixture(unittest.TestCase):
 
 class RenderRefusals(unittest.TestCase):
     def test_unknown_schema_is_refused(self):
-        with open(FIXTURE, encoding="utf-8") as f:
-            data = json.load(f)
+        data = load_fixture()
         data["schema"] += 1
         with tempfile.TemporaryDirectory() as out_dir:
             status = os.path.join(out_dir, "status.json")

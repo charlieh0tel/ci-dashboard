@@ -1,11 +1,24 @@
 {
-  "schema": 1,
+  "schema": 2,
   "generated": "2026-01-15T12:00:00+00:00",
   "owner": "example",
+  "unchecked": [
+    {
+      "what": "APT repository",
+      "why": "network error"
+    }
+  ],
   "repos": [
+    {
+      "name": "example/unreachable",
+      "url": "https://github.com/example/unreachable",
+      "unchecked": "rate limited",
+      "health": "unknown"
+    },
     {
       "name": "example/shipping",
       "url": "https://github.com/example/shipping",
+      "unchecked": null,
       "branch": "main",
       "pushed": "2026-01-14T09:00:00Z",
       "runs": [
@@ -27,13 +40,19 @@
             "id": "RUSTSEC-2025-9001",
             "summary": "Fixture advisory: out-of-bounds read in frame parser",
             "informational": false,
-            "aliases": ["GHSA-xxxx-yyyy-zzzz"],
-            "crates": ["framer 0.4.1"]
+            "aliases": [
+              "GHSA-xxxx-yyyy-zzzz"
+            ],
+            "crates": [
+              "framer 0.4.1"
+            ]
           }
         ],
         "tag": "v1.2.0",
         "has_lock": true,
-        "locks": ["Cargo.lock"]
+        "locks": [
+          "Cargo.lock"
+        ]
       },
       "published": [
         {
@@ -56,6 +75,7 @@
     {
       "name": "example/broken",
       "url": "https://github.com/example/broken",
+      "unchecked": null,
       "branch": "main",
       "pushed": "2026-01-15T10:00:00Z",
       "runs": [
@@ -92,6 +112,7 @@
     {
       "name": "example/reviewing",
       "url": "https://github.com/example/reviewing",
+      "unchecked": null,
       "branch": "main",
       "pushed": "2026-01-10T12:00:00Z",
       "runs": [
@@ -138,6 +159,7 @@
     {
       "name": "other-org/guest",
       "url": "https://github.com/other-org/guest",
+      "unchecked": null,
       "branch": "main",
       "pushed": "2026-01-01T00:00:00Z",
       "runs": [
@@ -159,13 +181,17 @@
             "summary": "Fixture notice: crate is unmaintained",
             "informational": true,
             "aliases": [],
-            "crates": ["oldcrate 0.1.0"]
+            "crates": [
+              "oldcrate 0.1.0"
+            ]
           }
         ],
         "published": [],
         "tag": null,
         "has_lock": true,
-        "locks": ["Cargo.lock"]
+        "locks": [
+          "Cargo.lock"
+        ]
       },
       "published": [
         {
@@ -181,6 +207,7 @@
     {
       "name": "example/quiet",
       "url": "https://github.com/example/quiet",
+      "unchecked": null,
       "branch": "main",
       "pushed": "2026-01-15T11:30:00Z",
       "runs": [
