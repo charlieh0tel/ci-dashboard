@@ -1,0 +1,96 @@
+name: Pull request
+
+# Everything build.yml does short of deploying, so a change is exercised
+# before the run that publishes it. No `paths:` filter: a check that is
+# skipped never reports, and a required check that never reports blocks the
+# merge.
+on:
+  pull_request:
+
+# Reading is all any of this needs, and all a Dependabot or fork pull request
+# is given anyway. No secrets either, for the same reason.
+permissions:
+  contents: read
+
+# Its own group, not `pages`: a pull request must never queue behind a
+# deployment or hold one up. A newer push makes the older run pointless.
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# Job names are not shared with build.yml, so each one is unambiguous as a
+# required status check.
+jobs:
+  # The same two commands as the lint job in build.yml.
+  ruff:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+    - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
+    - run: uvx ruff check --preview .
+    - run: uvx ruff format --check .
+
+  # A workflow typo in build.yml otherwise shows up as a board that stopped
+  # updating. The release binary is fetched at a fixed version and checked
+  # against a fixed digest rather than installed by the project's download
+  # script, which would be a remote script piped into a shell.
+  actionlint:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: 1.7.12
+      SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+    - name: Install actionlint
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        archive="actionlint_${VERSION}_linux_amd64.tar.gz"
+        gh release download "v${VERSION}" --repo rhysd/actionlint \
+          --pattern "$archive" --dir "$RUNNER_TEMP"
+        echo "${SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check
+        tar -xzf "${RUNNER_TEMP}/${archive}" -C "$RUNNER_TEMP" actionlint
+    - run: '"$RUNNER_TEMP/actionlint" -color'
+
+  # The render half against a committed status.json: no network, no token,
+  # and the same answer every time.
+  render-fixture:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+    - run: python3 -m unittest discover -s tests -v
+
+  # Both halves against the live API, into a scratch directory that nothing
+  # uploads. Four repositories rather than the whole account: a full crawl is
+  # about 700 requests against the 1,000 an hour this repository's Actions
+  # token gets, and the build that deploys the merge draws on the same
+  # allowance minutes later. These four cover each lockfile type, a release,
+  # a tag-only publisher, crates.io, npm and the APT repository in about 60.
+  collect-and-render:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+    - name: Collect
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: >-
+        python3 build.py collect --owner charlieh0tel --out-dir "$RUNNER_TEMP/site"
+        --repo charlieh0tel/ci-dashboard
+        --repo charlieh0tel/nec2-js
+        --repo charlieh0tel/rotaryclub
+        --repo charlieh0tel/usbrelay-rs
+
+    - name: Render
+      run: python3 build.py render --out-dir "$RUNNER_TEMP/site"
+
+    # collect skips what it cannot read instead of failing, so a run that was
+    # refused everything would still exit 0. This repository always has a
+    # workflow run and so always earns a row; the other three may come and go.
+    - name: Check that this repository made it onto the page
+      env:
+        REPO: ${{ github.repository }}
+      run: |
+        grep -q "\"name\": \"${REPO}\"" "$RUNNER_TEMP/site/status.json"
+        grep -q "href='https://github.com/${REPO}'" "$RUNNER_TEMP/site/index.html"
+        grep -q "</html>" "$RUNNER_TEMP/site/index.html"
