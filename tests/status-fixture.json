@@ -1,0 +1,209 @@
+{
+  "schema": 1,
+  "generated": "2026-01-15T12:00:00+00:00",
+  "owner": "example",
+  "repos": [
+    {
+      "name": "example/shipping",
+      "url": "https://github.com/example/shipping",
+      "branch": "main",
+      "pushed": "2026-01-14T09:00:00Z",
+      "runs": [
+        {
+          "name": "CI",
+          "conclusion": "success",
+          "url": "https://github.com/example/shipping/actions/runs/101",
+          "finished": "2026-01-14T09:05:00Z",
+          "event": "push",
+          "ref": null,
+          "stale": false
+        }
+      ],
+      "prs": [],
+      "advisories": {
+        "main": [],
+        "published": [
+          {
+            "id": "RUSTSEC-2025-9001",
+            "summary": "Fixture advisory: out-of-bounds read in frame parser",
+            "informational": false,
+            "aliases": ["GHSA-xxxx-yyyy-zzzz"],
+            "crates": ["framer 0.4.1"]
+          }
+        ],
+        "tag": "v1.2.0",
+        "has_lock": true,
+        "locks": ["Cargo.lock"]
+      },
+      "published": [
+        {
+          "channel": "newest release",
+          "package": "v1.2.0",
+          "published": "",
+          "source": null,
+          "behind": false
+        },
+        {
+          "channel": "crates.io",
+          "package": "shipping",
+          "published": "1.2.0",
+          "source": "1.3.0",
+          "behind": true
+        }
+      ],
+      "health": "passing"
+    },
+    {
+      "name": "example/broken",
+      "url": "https://github.com/example/broken",
+      "branch": "main",
+      "pushed": "2026-01-15T10:00:00Z",
+      "runs": [
+        {
+          "name": "CI",
+          "conclusion": "failure",
+          "url": "https://github.com/example/broken/actions/runs/201",
+          "finished": "2026-01-15T10:10:00Z",
+          "event": "push",
+          "ref": null,
+          "stale": false
+        },
+        {
+          "name": "Nightly",
+          "conclusion": "failure",
+          "url": "https://github.com/example/broken/actions/runs/202",
+          "finished": "2026-01-12T03:00:00Z",
+          "event": "schedule",
+          "ref": null,
+          "stale": true
+        }
+      ],
+      "prs": [],
+      "advisories": {
+        "main": [],
+        "published": [],
+        "tag": null,
+        "has_lock": false,
+        "locks": []
+      },
+      "published": [],
+      "health": "failing"
+    },
+    {
+      "name": "example/reviewing",
+      "url": "https://github.com/example/reviewing",
+      "branch": "main",
+      "pushed": "2026-01-10T12:00:00Z",
+      "runs": [
+        {
+          "name": "CI",
+          "conclusion": "success",
+          "url": "https://github.com/example/reviewing/actions/runs/301",
+          "finished": "2026-01-10T12:04:00Z",
+          "event": "push",
+          "ref": null,
+          "stale": false
+        }
+      ],
+      "prs": [
+        {
+          "number": 7,
+          "title": "Escape <b>angle</b> brackets & \"quotes\"",
+          "url": "https://github.com/example/reviewing/pull/7",
+          "draft": false,
+          "author": "someone",
+          "updated": "2026-01-15T08:00:00Z",
+          "checks": "failing"
+        },
+        {
+          "number": 8,
+          "title": "Bump the actions group",
+          "url": "https://github.com/example/reviewing/pull/8",
+          "draft": true,
+          "author": "dependabot[bot]",
+          "updated": "2026-01-15T11:30:00Z",
+          "checks": "running"
+        }
+      ],
+      "advisories": {
+        "main": [],
+        "published": [],
+        "tag": null,
+        "has_lock": false,
+        "locks": []
+      },
+      "published": [],
+      "health": "passing"
+    },
+    {
+      "name": "other-org/guest",
+      "url": "https://github.com/other-org/guest",
+      "branch": "main",
+      "pushed": "2026-01-01T00:00:00Z",
+      "runs": [
+        {
+          "name": "Release",
+          "conclusion": "success",
+          "url": "https://github.com/other-org/guest/actions/runs/401",
+          "finished": "2025-12-20T00:00:00Z",
+          "event": "push",
+          "ref": "v2.0.0",
+          "stale": false
+        }
+      ],
+      "prs": [],
+      "advisories": {
+        "main": [
+          {
+            "id": "RUSTSEC-2025-9002",
+            "summary": "Fixture notice: crate is unmaintained",
+            "informational": true,
+            "aliases": [],
+            "crates": ["oldcrate 0.1.0"]
+          }
+        ],
+        "published": [],
+        "tag": null,
+        "has_lock": true,
+        "locks": ["Cargo.lock"]
+      },
+      "published": [
+        {
+          "channel": "newest tag",
+          "package": "v2.0.0",
+          "published": "",
+          "source": null,
+          "behind": false
+        }
+      ],
+      "health": "passing"
+    },
+    {
+      "name": "example/quiet",
+      "url": "https://github.com/example/quiet",
+      "branch": "main",
+      "pushed": "2026-01-15T11:30:00Z",
+      "runs": [
+        {
+          "name": "CI",
+          "conclusion": "success",
+          "url": "https://github.com/example/quiet/actions/runs/501",
+          "finished": "2026-01-15T11:35:00Z",
+          "event": "push",
+          "ref": null,
+          "stale": false
+        }
+      ],
+      "prs": [],
+      "advisories": {
+        "main": [],
+        "published": [],
+        "tag": null,
+        "has_lock": false,
+        "locks": []
+      },
+      "published": [],
+      "health": "passing"
+    }
+  ]
+}
