@@ -88,23 +88,35 @@ jobs:
     - name: Render
       run: python3 build.py render --out-dir "$RUNNER_TEMP/site"
 
-    # collect skips what it cannot read instead of failing, so a run that was
-    # refused everything would still exit 0. All four have workflow runs and
-    # so earn a row. One going missing means it was renamed, archived or could
-    # not be read, and the list above no longer covers what it claims to.
-    - name: Check that all four made it onto the page
+    # collect exits 0 whatever it was refused: a repository it could not read
+    # still gets a row, marked unchecked, and one that does not exist gets
+    # none. Either is a failure here. All four have workflow runs and so earn
+    # a row; one going missing means it was renamed or archived, and the list
+    # above no longer covers what it claims to.
+    - name: Check that all four were read and made it onto the page
       run: |
+        status="$RUNNER_TEMP/site/status.json"
+        page="$RUNNER_TEMP/site/index.html"
         read -r -a names <<< "$REPOS"
-        missing=0
+        bad=0
         for repo in "${names[@]}"; do
-          if ! grep -q "\"name\": \"${repo}\"" "$RUNNER_TEMP/site/status.json"; then
-            echo "::error::${repo} is not in status.json"
-            missing=1
+          state=$(jq -r --arg name "$repo" '
+            [.repos[] | select(.name == $name)]
+            | if length == 0 then "not in status.json"
+              elif .[0].unchecked then "could not be checked: " + .[0].unchecked
+              else "ok" end' "$status")
+          if [ "$state" != ok ]; then
+            echo "::error::${repo} ${state}"
+            bad=1
           fi
-          if ! grep -q "href='https://github.com/${repo}'" "$RUNNER_TEMP/site/index.html"; then
+          if ! grep -q "href='https://github.com/${repo}'" "$page"; then
             echo "::error::${repo} is not on the page"
-            missing=1
+            bad=1
           fi
         done
-        grep -q "</html>" "$RUNNER_TEMP/site/index.html"
-        exit "$missing"
+        if ! jq -e '.unchecked == []' "$status" > /dev/null; then
+          echo "::error::could not read: $(jq -c '.unchecked' "$status")"
+          bad=1
+        fi
+        grep -q "</html>" "$page"
+        exit "$bad"
