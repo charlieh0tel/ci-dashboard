@@ -61,7 +61,8 @@ Pull requests get their own workflow, `pr.yml`, which does everything short of
 deploying: the same ruff commands, `actionlint` over the workflows, a render of
 a committed fixture, and a live `collect` and `render` into a scratch
 directory. The fixture is what makes the render check repeatable -- the live
-data changes hourly, `tests/status-fixture.json` does not:
+data changes hourly, `tests/status-fixture.json` does not -- and a second
+test file drives `collect` against a network that refuses everything:
 
 ```sh
 python3 -m unittest discover -s tests
@@ -71,8 +72,9 @@ The live run on a pull request collects four repositories, not the account,
 using `collect --repo OWNER/NAME` (repeatable). A full crawl is about 700 API
 requests and the Actions token gets 1,000 an hour for the whole repository, so
 a pull request that crawled everything would leave the deploying build that
-follows a merge rate-limited -- and `collect` reads a refused request as
-nothing found.
+follows a merge rate-limited, and that build would publish a board full of
+rows it could not check. The job fails if any of its four repositories is
+missing or comes back unchecked.
 
 Run it locally the same way CI does:
 
@@ -195,6 +197,35 @@ inferred:
 
 A vulnerable release outranks a red build: the build is your problem, the
 release is everyone else's.
+
+## When something cannot be checked
+
+"Does not exist" and "could not check" are different answers and the board
+keeps them apart. A 404 is an answer: no such lockfile, no release, no such
+package on the registry. A rate limit (a 403 or 429 from GitHub, primary or
+secondary), any other refusal, a server error that outlasts three attempts and
+a network failure are not answers, and `collect` used to treat the 403 among
+them exactly like a 404 -- so a build that ran out of API allowance published
+a board with rows and details quietly missing.
+
+Now the build still deploys, and says what it could not find out:
+
+- A repository with any unanswered question gets a row in a **Could not
+  check** section at the top, carrying the reason and nothing else. Half a row
+  would show "no advisories" for the half that was never asked.
+- A warning above the summary says how many repositories could not be checked
+  and why, and the same for the two things that are not a repository: the
+  repository list and the APT index.
+- The favicon goes amber when nothing is known to be failing but something
+  could not be checked.
+
+In `status.json` each repository carries `unchecked` (the reason, or `null`),
+and the top level carries an `unchecked` list for the rest. That changed the
+file's shape, so `schema` is 2.
+
+A 401, or any other 4xx that means the request itself was wrong, still stops
+the build: that is this repository's own fault and every request would fail
+the same way.
 
 ## Private repositories
 

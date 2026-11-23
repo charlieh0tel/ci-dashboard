@@ -32,6 +32,67 @@ EXTRA_REPOS = ["PAARA-org/w6otx"]
 # earns a row if it has CI or an open pull request -- see `interesting()`.
 
 
+class CouldNotCheck(Exception):
+    """A question that got no answer, as opposed to the answer "nothing".
+
+    The message is the reason as the page will print it.
+    """
+
+
+def refusal(e):
+    """Why an HTTP error means "could not check", in a few words."""
+    if e.code in (403, 429):
+        # The primary limit says so in a header, the secondary one with
+        # Retry-After or only in the body.
+        limited = (
+            e.code == 429
+            or e.headers.get("x-ratelimit-remaining") == "0"
+            or e.headers.get("retry-after")
+            or b"rate limit" in e.read().lower()
+        )
+        if limited:
+            return "rate limited"
+    if e.code >= 500:
+        return f"server error (HTTP {e.code})"
+    return f"refused (HTTP {e.code})"
+
+
+def fetch(req, what, timeout=30):
+    """The body of a response, or None if the thing asked for does not exist.
+
+    Those are the only two answers. A rate limit, a refusal, a server error
+    and a dead network all raise CouldNotCheck instead: this used to return
+    None for a 403 exactly as for a 404, so a build that ran out of API
+    allowance published a board with rows and details missing and nothing on
+    it to say so.
+    """
+    # Hundreds of requests per build, unattended, four times an hour: a
+    # single timeout should not cost a repository its row.
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                print(f"  {what}: HTTP 404, skipping", file=sys.stderr)
+                return None
+            if e.code in (403, 429, 451):
+                # Waiting a few seconds does not lift a rate limit or a block.
+                raise CouldNotCheck(refusal(e)) from e
+            if e.code < 500:
+                # A bad token or a malformed request is this build's own
+                # fault, and every other request will fail the same way.
+                raise
+            why = refusal(e)
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            why = "network error"
+            print(f"  {what}: {e}", file=sys.stderr)
+        if attempt < 2:
+            print(f"  {what}: {why}, retrying", file=sys.stderr)
+            time.sleep(2 * (attempt + 1))
+    raise CouldNotCheck(why)
+
+
 def api(path, token, params=None):
     url = f"{API}{path}"
     if params:
@@ -45,27 +106,8 @@ def api(path, token, params=None):
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    # Roughly 80 requests per build, unattended, four times an hour: a single
-    # timeout should not cost the whole board.
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.load(resp)
-        except urllib.error.HTTPError as e:
-            # A missing Actions setup or a repository we cannot see is not
-            # fatal; the row just carries less. Anything else should stop the
-            # build rather than quietly publish a half-empty board.
-            if e.code in (403, 404, 451):
-                print(f"  {path}: HTTP {e.code}, skipping", file=sys.stderr)
-                return None
-            if e.code < 500 or attempt == 2:
-                raise
-        except (urllib.error.URLError, TimeoutError) as e:
-            if attempt == 2:
-                raise
-            print(f"  {path}: {e}, retrying", file=sys.stderr)
-        time.sleep(2 * (attempt + 1))
-    return None
+    body = fetch(req, path)
+    return None if body is None else json.loads(body)
 
 
 def repos_for(owner, token):
@@ -183,16 +225,8 @@ def post_json(url, payload):
         headers={"Content-Type": "application/json", "User-Agent": "ci-dashboard"},
         method="POST",
     )
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                return json.load(resp)
-        except (urllib.error.URLError, TimeoutError, urllib.error.HTTPError) as e:
-            if attempt == 2:
-                raise
-            print(f"  OSV: {e}, retrying", file=sys.stderr)
-            time.sleep(2 * (attempt + 1))
-    return None
+    body = fetch(req, url, timeout=60)
+    return None if body is None else json.loads(body)
 
 
 # Which lockfiles to read, and the OSV ecosystem each one's contents belong to.
@@ -217,8 +251,8 @@ def lockfile(full_name, ref, token, name="Cargo.lock"):
     url = data.get("download_url")
     if not url:
         return None
-    with urllib.request.urlopen(url, timeout=30) as resp:
-        return resp.read().decode("utf-8", "replace")
+    body = fetch(urllib.request.Request(url), f"{full_name}/{name}")
+    return None if body is None else body.decode("utf-8", "replace")
 
 
 def packages(lock_text, lock_name):
@@ -262,7 +296,7 @@ def osv_lookup(pkgs, cache):
                 for eco, n, v in chunk
             ]
         }
-        results = post_json(f"{OSV_API}/querybatch", body).get("results", [])
+        results = (post_json(f"{OSV_API}/querybatch", body) or {}).get("results", [])
         for pkg, result in zip(chunk, results):
             cache[pkg] = [v["id"] for v in (result or {}).get("vulns", [])]
     found = {}
@@ -314,12 +348,8 @@ def dedupe(items):
 
 def api_get_json(url):
     req = urllib.request.Request(url, headers={"User-Agent": "ci-dashboard"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.load(resp)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
-        print(f"  {url}: {e}", file=sys.stderr)
-        return None
+    body = fetch(req, url)
+    return None if body is None else json.loads(body)
 
 
 def advisories(full_name, branch, token, pkg_cache, vuln_cache):
@@ -482,12 +512,8 @@ def apt_repository(token):
 
 def api_get_text(url):
     req = urllib.request.Request(url, headers={"User-Agent": "ci-dashboard"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return resp.read().decode("utf-8", "replace")
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
-        print(f"  {url}: {e}", file=sys.stderr)
-        return None
+    body = fetch(req, url)
+    return None if body is None else body.decode("utf-8", "replace")
 
 
 def newest_tag(full_name, token, release_tag):
@@ -578,45 +604,77 @@ def health(repo):
     return "unknown"
 
 
+def examine(full_name, token, caches, apt_serving):
+    """Everything the board says about one repository, or None for no row."""
+    pkg_cache, vuln_cache, reg_cache = caches
+    meta = api(f"/repos/{full_name}", token)
+    if not meta:
+        return None
+    repo = {
+        "name": full_name,
+        "url": meta["html_url"],
+        "unchecked": None,
+        "branch": meta["default_branch"],
+        "pushed": meta["pushed_at"],
+        "runs": latest_runs(full_name, meta["default_branch"], token),
+        "prs": open_prs(full_name, token),
+        "advisories": advisories(
+            full_name, meta["default_branch"], token, pkg_cache, vuln_cache
+        ),
+    }
+    for run in repo["runs"]:
+        # Only default-branch runs go stale. A tag run describes the tag,
+        # and stays true however far main moves afterwards -- marking a
+        # successful release stale because someone merged a README fix
+        # since would be telling people to distrust a result that is fine.
+        run["stale"] = not run["ref"] and run["finished"] < meta["pushed_at"]
+    repo["published"] = upstream(repo, full_name, token, reg_cache, apt_serving)
+    repo["health"] = health(repo)
+    return repo if interesting(repo) else None
+
+
 def collect(owner, token, only=None):
-    out = []
+    """The rows, and whatever could not be read that is not one repository's."""
+    out, unchecked = [], []
     # Shared across repositories: the same crate at the same version resolves
     # to the same answer, and these repos overlap heavily.
-    pkg_cache, vuln_cache, reg_cache = {}, {}, {}
-    apt_serving = apt_repository(token)
+    caches = {}, {}, {}
+    try:
+        apt_serving = apt_repository(token)
+    except CouldNotCheck as e:
+        apt_serving = {}
+        unchecked.append({"what": "APT repository", "why": str(e)})
     # A full crawl is about 700 API requests, and the Actions token allows a
     # repository 1,000 an hour across all of its workflows. A pull request
     # check that crawled everything would leave the build that deploys the
-    # merge short, and a rate-limited request reads as "nothing found". So a
-    # check names a few repositories and leaves the listing alone.
-    names = only or [r["full_name"] for r in repos_for(owner, token)] + EXTRA_REPOS
+    # merge short, and that build would publish a board full of rows it could
+    # not check. So a check names a few repositories and leaves the listing
+    # alone.
+    names = only or EXTRA_REPOS
+    if not only:
+        try:
+            names = [r["full_name"] for r in repos_for(owner, token)] + EXTRA_REPOS
+        except CouldNotCheck as e:
+            unchecked.append({"what": "repository list", "why": str(e)})
     for full_name in sorted(set(names)):
         print(f"- {full_name}", file=sys.stderr)
-        meta = api(f"/repos/{full_name}", token)
-        if not meta:
-            continue
-        repo = {
-            "name": full_name,
-            "url": meta["html_url"],
-            "branch": meta["default_branch"],
-            "pushed": meta["pushed_at"],
-            "runs": latest_runs(full_name, meta["default_branch"], token),
-            "prs": open_prs(full_name, token),
-            "advisories": advisories(
-                full_name, meta["default_branch"], token, pkg_cache, vuln_cache
-            ),
-        }
-        for run in repo["runs"]:
-            # Only default-branch runs go stale. A tag run describes the tag,
-            # and stays true however far main moves afterwards -- marking a
-            # successful release stale because someone merged a README fix
-            # since would be telling people to distrust a result that is fine.
-            run["stale"] = not run["ref"] and run["finished"] < meta["pushed_at"]
-        repo["published"] = upstream(repo, full_name, token, reg_cache, apt_serving)
-        repo["health"] = health(repo)
-        if interesting(repo):
+        try:
+            repo = examine(full_name, token, caches, apt_serving)
+        except CouldNotCheck as e:
+            # One unanswered question spoils the row: half a row would show
+            # "no advisories" or "no pull requests" for the half not asked.
+            # It gets a row regardless of `interesting()`, because whether it
+            # is interesting is one of the things nobody could find out.
+            print(f"  could not check: {e}", file=sys.stderr)
+            repo = {
+                "name": full_name,
+                "url": f"https://github.com/{full_name}",
+                "unchecked": str(e),
+                "health": "unknown",
+            }
+        if repo:
             out.append(repo)
-    return sorted(out, key=rank)
+    return sorted(out, key=rank), unchecked
 
 
 def short(name):
@@ -629,6 +687,9 @@ def group(repo):
     A release people can install with a known advisory in it outranks a red
     build: the build is a problem for you, the release is a problem for them.
     """
+    if repo["unchecked"]:
+        # Ahead of everything: these are the rows the page knows least about.
+        return -1
     if real(repo["advisories"]["published"]) or repo["health"] == "failing":
         return 0
     if repo["prs"]:
@@ -637,6 +698,8 @@ def group(repo):
 
 
 def rank(repo):
+    if repo["unchecked"]:
+        return (group(repo), short(repo["name"]).lower())
     # Count, not presence. Seven advisories outranks one, which the previous
     # key got backwards by asking only whether there were any.
     published = len(real(repo["advisories"]["published"]))
@@ -712,6 +775,13 @@ h2.section .count { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .repo { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
   padding: 14px 16px; margin-bottom: 10px; }
 .repo.failing { border-left: 3px solid var(--fail); }
+.repo.unchecked { border-left: 3px solid var(--warn); }
+.warn { margin: 0 0 24px; padding: 12px 16px; background: var(--card);
+  border: 1px solid var(--warn); border-left-width: 3px; border-radius: 10px;
+  font-size: 13px; }
+.warn p { margin: 0; }
+.warn p + p { margin-top: 6px; }
+.warn b { color: var(--warn); }
 .repo header { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .repo h2 { font-size: 15px; margin: 0; font-weight: 600; }
 .repo h2 a { color: var(--ink); text-decoration: none; }
@@ -758,7 +828,7 @@ h2.section .count { font-weight: 400; text-transform: none; letter-spacing: 0; }
 .adv-list a { color: var(--fail); text-decoration: none; }
 .adv-list a:hover { text-decoration: underline; }
 .adv-list .crate { color: var(--ink); }
-.stale { margin-top: 6px; font-size: 12px; color: var(--warn); }
+.stale, .why { margin-top: 6px; font-size: 12px; color: var(--warn); }
 .chip.stale-chip { opacity: 0.45; font-weight: 400; }
 #age.old { color: var(--warn); font-weight: 600; }
 footer { color: var(--muted); font-size: 12px; margin-top: 28px; text-align: center; }
@@ -888,7 +958,9 @@ def advisory_html(repo, e):
 
 # Inlined as a data URI so the page stays one file, and red only when a build
 # is failing, so a pinned tab says whether CI needs attention. Releases with
-# advisories deliberately do not turn it red. The colours sit between the
+# advisories deliberately do not turn it red. Amber when nothing is known to
+# be failing but something could not be checked: green would be claiming more
+# than the build found out. The colours sit between the
 # light and dark palettes because a tab strip follows the browser theme, not
 # the page's. "#" would end a data URI, hence %23.
 FAVICON = (
@@ -898,17 +970,55 @@ FAVICON = (
 )
 
 
-def render(repos, owner, now):
+# What the reader loses when something that is not a repository goes unread.
+MISSING = {
+    "APT repository": "APT versions are missing from every row",
+    "repository list": "repositories are missing from this page",
+}
+
+
+def warning_html(repos, unchecked, e):
+    """Say what this build could not find out, before anything it did."""
+    lines = []
+    blind = [r for r in repos if r["unchecked"]]
+    if blind:
+        reasons = [r["unchecked"] for r in blind]
+        counts = ", ".join(
+            f"{e(why)} ({reasons.count(why)})" for why in sorted(set(reasons))
+        )
+        lines.append(
+            f"{len(blind)} of {len(repos)} repositories could not be checked: "
+            f"{counts}. Those rows are marked; they are not passing, failing "
+            "or quiet."
+        )
+    lines.extend(
+        f"The {e(u['what'])} could not be read ({e(u['why'])}), so "
+        f"{MISSING.get(u['what'], 'what it supplies is missing')}."
+        for u in unchecked
+    )
+    if not lines:
+        return []
+    lines[0] = f"<b>Incomplete.</b> {lines[0]}"
+    return [
+        "<div class='warn' role='alert'>",
+        *(f"<p>{line}</p>" for line in lines),
+        "</div>",
+    ]
+
+
+def render(repos, owner, now, unchecked=()):
     e = html.escape
-    failing = [r for r in repos if r["health"] == "failing"]
-    prs = [(r, p) for r in repos for p in r["prs"]]
-    shipping = [r for r in repos if real(r["advisories"]["published"])]
+    checked = [r for r in repos if not r["unchecked"]]
+    blind = len(repos) != len(checked) or unchecked
+    failing = [r for r in checked if r["health"] == "failing"]
+    prs = [(r, p) for r in checked for p in r["prs"]]
+    shipping = [r for r in checked if real(r["advisories"]["published"])]
     parts = [
         "<!DOCTYPE html>",
         '<html lang="en"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{e(owner)}'s CI Status</title>",
-        FAVICON.format("d8574a" if failing else "3f9a62"),
+        FAVICON.format("d8574a" if failing else "c08a1e" if blind else "3f9a62"),
         f"<style>{CSS}</style></head><body><div class='wrap'>",
         (
             f"<div class='top'><h1>{e(owner)}'s CI Status</h1>"
@@ -927,6 +1037,7 @@ def render(repos, owner, now):
             f"Rebuilt {e(now.strftime('%Y-%m-%d %H:%M UTC'))} "
             "(<span id='age'></span>).</p>"
         ),
+        *warning_html(repos, unchecked, e),
         "<div class='summary'>",
         f"<div><b class='{'fail' if failing else ''}'>{len(failing)}</b>repos failing</div>",
         f"<div><b>{len(prs)}</b>open pull requests</div>",
@@ -938,6 +1049,7 @@ def render(repos, owner, now):
         "</div>",
     ]
     titles = {
+        -1: "Could not check",
         0: "Needs attention",
         1: "Open pull requests",
         2: "Quiet",
@@ -952,13 +1064,23 @@ def render(repos, owner, now):
                 f"<h2 class='section'>{e(titles[g])} "
                 f"<span class='count'>({n})</span></h2>"
             )
-        parts.append(f"<section class='repo {r['health']}'>")
         short = (
             r["name"].split("/", 1)[1]
             if r["name"].startswith(owner + "/")
             else r["name"]
         )
+        if r["unchecked"]:
+            # No chips, no pull requests, no "pushed": an empty version of any
+            # of those would be a claim, and none of it was read.
+            parts.append(
+                "<section class='repo unchecked'>"
+                f"<header><h2><a href='{e(r['url'])}'>{e(short)}</a></h2></header>"
+                f"<div class='why'>Could not check: {e(r['unchecked'])}</div>"
+                "</section>"
+            )
+            continue
         parts.append(
+            f"<section class='repo {r['health']}'>"
             f"<header><h2><a href='{e(r['url'])}'>{e(short)}</a></h2>"
             f"<span class='when'>pushed {e(ago(r['pushed'], now))}</span></header>"
         )
@@ -1020,7 +1142,7 @@ def render(repos, owner, now):
 
 # status.json is the contract between the two halves, not a by-product of
 # rendering. Bump this when its shape changes in a way a reader would notice.
-SCHEMA = 1
+SCHEMA = 2
 
 
 def do_collect(owner, out_dir, only=None):
@@ -1029,7 +1151,7 @@ def do_collect(owner, out_dir, only=None):
     if not token:
         sys.exit("GITHUB_TOKEN is required (the Actions token is enough)")
     now = dt.datetime.now(dt.timezone.utc)
-    repos = collect(owner, token, only)
+    repos, unchecked = collect(owner, token, only)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "status.json")
     with open(path, "w") as f:
@@ -1038,12 +1160,17 @@ def do_collect(owner, out_dir, only=None):
                 "schema": SCHEMA,
                 "generated": now.isoformat(),
                 "owner": owner,
+                "unchecked": unchecked,
                 "repos": repos,
             },
             f,
             indent=2,
         )
-    print(f"{len(repos)} repositories written to {path}", file=sys.stderr)
+    blind = sum(1 for r in repos if r["unchecked"])
+    print(
+        f"{len(repos)} repositories written to {path}, {blind} of them unchecked",
+        file=sys.stderr,
+    )
     return path
 
 
@@ -1059,7 +1186,8 @@ def do_render(status_path, out_dir):
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "index.html")
     with open(path, "w") as f:
-        f.write(render(data["repos"], data.get("owner", "charlieh0tel"), now))
+        owner = data.get("owner", "charlieh0tel")
+        f.write(render(data["repos"], owner, now, data["unchecked"]))
     print(f"{len(data['repos'])} repositories rendered to {path}", file=sys.stderr)
 
 

@@ -6,10 +6,14 @@
   that file. Changing the file's shape means bumping `SCHEMA`.
 - Before committing: `uvx ruff check --preview . && uvx ruff format --check .`
   must pass. Fix findings rather than adding `# noqa`.
-- One test, of `render` only: `python3 -m unittest discover -s tests` renders
-  `tests/status-fixture.json` and checks the page. Keep the fixture in step
-  with `SCHEMA`. For anything else, run `render` (and `collect` if the change
-  touches the API) and look at `_site/index.html`.
+- Tests: `python3 -m unittest discover -s tests` renders
+  `tests/status-fixture.json` and checks the page, and checks how `collect`
+  reports requests that were refused. Keep the fixture in step with `SCHEMA`.
+  For anything else, run `render` (and `collect` if the change touches the
+  API) and look at `_site/index.html`.
+- All network I/O goes through `fetch()`: None means a 404, and anything else
+  that is not an answer raises `CouldNotCheck`. Never catch that to return an
+  empty result.
 - Be Pythonic: comprehensions, `with`, unpacking, `dict.get`, `any`/`all`,
   and the stdlib before a hand-rolled helper.
 - DRY: reuse or extend existing helpers (`api()`, `dedupe()`, `ago()`, ...)
