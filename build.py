@@ -12,6 +12,7 @@ public). Writes index.html and status.json next to itself, or into --out-dir.
 
 import argparse
 import base64
+import collections
 import datetime as dt
 import html
 import json
@@ -20,6 +21,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
@@ -30,6 +32,21 @@ EXTRA_REPOS = ["PAARA-org/w6otx"]
 # Forks and archives are noise: nobody is watching CI on a fork of direwolf.
 # What is left still includes long-dormant repositories, so a repository only
 # earns a row if it has CI or an open pull request -- see `interesting()`.
+
+
+# Requests made, by which allowance they draw on. The Actions token gets a
+# repository 1,000 REST requests an hour and, separately, 1,000 GraphQL
+# points, shared by every workflow in it. collect prints the tally so that a
+# change which doubles it shows up in the log before it shows up as a board
+# full of "could not check".
+SPENT = collections.Counter()
+
+
+def spent_on(url):
+    parts = urllib.parse.urlsplit(url)
+    if parts.hostname != urllib.parse.urlsplit(API).hostname:
+        return "elsewhere"
+    return "graphql" if parts.path == "/graphql" else "rest"
 
 
 class CouldNotCheck(Exception):
@@ -66,9 +83,10 @@ def fetch(req, what, timeout=30):
     allowance published a board with rows and details missing and nothing on
     it to say so.
     """
-    # Hundreds of requests per build, unattended, four times an hour: a
+    # A hundred and fifty requests per build, unattended, four times an hour: a
     # single timeout should not cost a repository its row.
     for attempt in range(3):
+        SPENT[spent_on(req.full_url)] += 1
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return resp.read()
@@ -110,6 +128,135 @@ def api(path, token, params=None):
     return None if body is None else json.loads(body)
 
 
+def graphql(query, token):
+    """One GraphQL query's data. A repository that does not exist is null."""
+    req = urllib.request.Request(
+        f"{API}/graphql",
+        data=json.dumps({"query": query}).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "ci-dashboard",
+        },
+        method="POST",
+    )
+    reply = json.loads(fetch(req, "graphql", timeout=60) or b"{}")
+    # GraphQL reports most failures in the body of a 200. NOT_FOUND is the
+    # 404 of this API and leaves the field null; anything else means part of
+    # the answer is missing, and there is no telling an empty list from one
+    # that was never filled in.
+    for error in reply.get("errors") or []:
+        kind, message = error.get("type"), error.get("message", "")
+        if kind == "NOT_FOUND":
+            print(f"  graphql: {message}, skipping", file=sys.stderr)
+            continue
+        print(f"  graphql: {kind}: {message}", file=sys.stderr)
+        if kind == "RATE_LIMITED" or "rate limit" in message.lower():
+            raise CouldNotCheck("rate limited")
+        raise CouldNotCheck(f"GraphQL error ({kind or 'unspecified'})")
+    if not reply.get("data"):
+        raise CouldNotCheck("GraphQL error (no data)")
+    return reply["data"]
+
+
+# Which lockfiles to read, and the OSV ecosystem each one's contents belong to.
+# uv.lock earns its place: GitHub does not list uv as a supported ecosystem, so
+# Dependabot will not open a fix PR for those projects, and this is the only
+# place their advisories show up outside their own CI.
+LOCKFILES = (
+    ("Cargo.lock", "crates.io"),
+    ("uv.lock", "PyPI"),
+    ("package-lock.json", "npm"),
+)
+
+
+# What is read from each repository's tree: the lockfiles at the default
+# branch and again at the newest release, the manifests at the branch only.
+LOCKS = tuple(name for name, _ in LOCKFILES)
+MANIFESTS = ("Cargo.toml", "package.json")
+BLOB = "... on Blob { text isTruncated }"
+
+# Everything the board needs from one repository that GraphQL can supply, in
+# one query for several repositories at a time. Asked for one REST call at a
+# time this was about ten requests per repository -- the repository, its pull
+# requests, each pull request's checks, five files, the release, three more
+# files at the release, the tags and a commit per tag -- and over 500 of the
+# 720 a full crawl made. Workflow runs are not in GraphQL and stay REST.
+#
+# The rollup's contexts are the check runs the pull request page shows. Asking
+# for check suites and their runs instead would be the same answer at about
+# ten times the cost in rate limit points, which are charged for what a query
+# could return rather than what it does.
+SNAPSHOT = """
+fragment snapshot on Repository {
+  url
+  pushedAt
+  defaultBranchRef { name }
+  pullRequests(states: OPEN, first: 50,
+               orderBy: {field: CREATED_AT, direction: DESC}) {
+    nodes {
+      number title url isDraft updatedAt
+      author { __typename login }
+      commits(last: 1) { nodes { commit { statusCheckRollup {
+        contexts(first: 100) {
+          nodes { __typename ... on CheckRun { status conclusion } }
+        }
+      } } } }
+    }
+  }
+  latestRelease { tagName tagCommit { __AT_RELEASE__ } }
+  refs(refPrefix: "refs/tags/", first: 1,
+       orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) { nodes { name } }
+  __AT_HEAD__
+}
+""".replace(
+    "__AT_HEAD__",
+    " ".join(
+        f'f{i}: object(expression: "HEAD:{name}") {{ {BLOB} }}'
+        for i, name in enumerate(LOCKS + MANIFESTS)
+    ),
+).replace(
+    "__AT_RELEASE__",
+    " ".join(
+        f'f{i}: file(path: "{name}") {{ object {{ {BLOB} }} }}'
+        for i, name in enumerate(LOCKS)
+    ),
+)
+
+# Repositories per query. A lockfile is tens to hundreds of kilobytes and a
+# query that runs too long is cut off, so not all sixty at once.
+SNAPSHOT_BATCH = 10
+
+
+def snapshots(names, token):
+    """{full_name: what SNAPSHOT says about it, or None if there is no such}."""
+    fields = []
+    for i, full_name in enumerate(names):
+        owner, name = full_name.split("/", 1)
+        fields.append(
+            f"r{i}: repository(owner: {json.dumps(owner)}, "
+            f"name: {json.dumps(name)}) {{ ...snapshot }}"
+        )
+    query = f"query {{ rateLimit {{ cost }} {' '.join(fields)} }} {SNAPSHOT}"
+    data = graphql(query, token)
+    SPENT["points"] += data["rateLimit"]["cost"]
+    out = {}
+    for i, full_name in enumerate(names):
+        node = data.get(f"r{i}")
+        if node:
+            release = node["latestRelease"] or {}
+            node["files"] = {
+                name: node.pop(f"f{j}") for j, name in enumerate(LOCKS + MANIFESTS)
+            }
+            node["release_files"] = {
+                name: (entry or {}).get("object")
+                for j, name in enumerate(LOCKS)
+                for entry in [(release.get("tagCommit") or {}).get(f"f{j}")]
+            }
+        out[full_name] = node
+    return out
+
+
 def repos_for(owner, token):
     out, page = [], 1
     while True:
@@ -139,9 +286,17 @@ def latest_runs(full_name, branch, token):
     updated_at. ee_stuff showed a red Pages build because an older commit's
     failed run was re-run after main's fix had already gone green.
     """
-    runs_on_branch = _runs(full_name, token, {"branch": branch})
+    anywhere, total = _runs(full_name, token, {})
+    if total <= RUNS_PAGE:
+        # Every run the repository has is already in hand, so the branch's
+        # are among them and asking again would only repeat the answer. That
+        # is the case for every repository without CI, which is a third of
+        # the account.
+        runs_on_branch = [r for r in anywhere if r["head_branch"] == branch]
+    else:
+        runs_on_branch, _ = _runs(full_name, token, {"branch": branch})
     newest = {r["workflow_id"]: r for r in reversed(runs_on_branch)}
-    for run in _runs(full_name, token, {}):
+    for run in anywhere:
         current = newest.get(run["workflow_id"])
         if not current or run["created_at"] > current["created_at"]:
             newest[run["workflow_id"]] = run
@@ -163,50 +318,60 @@ def latest_runs(full_name, branch, token):
     return sorted(runs, key=lambda r: r["name"].lower())
 
 
+RUNS_PAGE = 50
+
+
 def _runs(full_name, token, extra):
-    """Completed runs, newest first, minus the ones that are not this repo's CI."""
-    params = {"per_page": 50, "exclude_pull_requests": "true", **extra}
-    data = api(f"/repos/{full_name}/actions/runs", token, params)
-    return [
+    """Completed runs, newest first, minus the ones that are not this repo's CI.
+
+    And how many runs the query matched in all, before that filter and beyond
+    the one page asked for.
+    """
+    params = {"per_page": RUNS_PAGE, "exclude_pull_requests": "true", **extra}
+    data = api(f"/repos/{full_name}/actions/runs", token, params) or {}
+    runs = [
         run
-        for run in (data or {}).get("workflow_runs", [])
+        for run in data.get("workflow_runs", [])
         # Dependabot's own update jobs arrive as `dynamic` runs, one per
         # dependency examined, and fail routinely on advisories it cannot fix.
         if run.get("event") != "dynamic" and run["status"] == "completed"
     ]
+    return runs, data.get("total_count", 0)
 
 
-def open_prs(full_name, token):
-    data = api(f"/repos/{full_name}/pulls", token, {"state": "open", "per_page": 50})
-    if not data:
-        return []
+def open_prs(node):
     prs = []
-    for pr in data:
+    for pr in node["pullRequests"]["nodes"]:
+        # A deleted account has no author; REST calls it ghost. And REST
+        # spells a bot's login with the suffix, which is what status.json has
+        # always carried.
+        author = pr["author"] or {"login": "ghost"}
+        bot = "[bot]" if author.get("__typename") == "Bot" else ""
+        head = pr["commits"]["nodes"]
+        rollup = (head[0]["commit"]["statusCheckRollup"] if head else None) or {}
         prs.append(
             {
                 "number": pr["number"],
                 "title": pr["title"],
-                "url": pr["html_url"],
-                "draft": pr["draft"],
-                "author": pr["user"]["login"],
-                "updated": pr["updated_at"],
-                "checks": pr_checks(full_name, pr["head"]["sha"], token),
+                "url": pr["url"],
+                "draft": pr["isDraft"],
+                "author": author["login"] + bot,
+                "updated": pr["updatedAt"],
+                "checks": pr_checks((rollup.get("contexts") or {}).get("nodes", [])),
             }
         )
     return prs
 
 
-def pr_checks(full_name, sha, token):
+def pr_checks(contexts):
     """Roll a pull request's check runs up to one word."""
-    data = api(f"/repos/{full_name}/commits/{sha}/check-runs", token, {"per_page": 100})
-    if not data:
-        return "none"
-    runs = data.get("check_runs", [])
+    # Commit statuses share the list; only check runs have ever counted here.
+    runs = [c for c in contexts if c["__typename"] == "CheckRun"]
     if not runs:
         return "none"
-    if any(r["status"] != "completed" for r in runs):
+    if any(r["status"] != "COMPLETED" for r in runs):
         return "running"
-    bad = {"failure", "timed_out", "cancelled", "action_required"}
+    bad = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}
     if any(r["conclusion"] in bad for r in runs):
         return "failing"
     return "passing"
@@ -229,17 +394,6 @@ def post_json(url, payload):
     return None if body is None else json.loads(body)
 
 
-# Which lockfiles to read, and the OSV ecosystem each one's contents belong to.
-# uv.lock earns its place: GitHub does not list uv as a supported ecosystem, so
-# Dependabot will not open a fix PR for those projects, and this is the only
-# place their advisories show up outside their own CI.
-LOCKFILES = (
-    ("Cargo.lock", "crates.io"),
-    ("uv.lock", "PyPI"),
-    ("package-lock.json", "npm"),
-)
-
-
 def lockfile(full_name, ref, token, name="Cargo.lock"):
     """One lockfile at one ref, or None if the repository has no such file."""
     data = api(f"/repos/{full_name}/contents/{name}", token, {"ref": ref})
@@ -253,6 +407,19 @@ def lockfile(full_name, ref, token, name="Cargo.lock"):
         return None
     body = fetch(urllib.request.Request(url), f"{full_name}/{name}")
     return None if body is None else body.decode("utf-8", "replace")
+
+
+def blob_text(blob, full_name, ref, token, name):
+    """A file's text from a snapshot, or None if the repository has no such.
+
+    GraphQL cuts a large blob short and says so; the contents API is asked
+    for the whole of those, and only those.
+    """
+    if not blob:
+        return None
+    if blob["isTruncated"] or blob["text"] is None:
+        return lockfile(full_name, ref, token, name)
+    return blob["text"]
 
 
 def packages(lock_text, lock_name):
@@ -352,7 +519,7 @@ def api_get_json(url):
     return None if body is None else json.loads(body)
 
 
-def advisories(full_name, branch, token, pkg_cache, vuln_cache):
+def advisories(node, full_name, token, pkg_cache, vuln_cache):
     """Advisories on the default branch and in the newest release, compared.
 
     They answer different questions: the branch says whether the problem is
@@ -360,11 +527,11 @@ def advisories(full_name, branch, token, pkg_cache, vuln_cache):
     """
     out = {"main": [], "published": [], "tag": None, "has_lock": False, "locks": []}
 
-    def pinned(ref):
+    def pinned(ref, files):
         """Everything pinned at a ref, across every lockfile the repo has."""
         found = []
         for name, ecosystem in LOCKFILES:
-            text = lockfile(full_name, ref, token, name)
+            text = blob_text(files[name], full_name, ref, token, name)
             if text is None:
                 continue
             if name not in out["locks"]:
@@ -372,17 +539,18 @@ def advisories(full_name, branch, token, pkg_cache, vuln_cache):
             found += [(ecosystem, n, v) for n, v in packages(text, name)]
         return found
 
-    on_branch = pinned(branch)
+    on_branch = pinned(node["defaultBranchRef"]["name"], node["files"])
     if not on_branch:
         return out
     out["has_lock"] = True
     for vid, pkgs in osv_lookup(on_branch, pkg_cache).items():
         out["main"].append({**osv_detail(vid, vuln_cache), "crates": sorted(pkgs)})
 
-    release = api(f"/repos/{full_name}/releases/latest", token)
+    release = node["latestRelease"]
     if release:
-        out["tag"] = release["tag_name"]
-        for vid, pkgs in osv_lookup(pinned(release["tag_name"]), pkg_cache).items():
+        out["tag"] = release["tagName"]
+        at_release = pinned(release["tagName"], node["release_files"])
+        for vid, pkgs in osv_lookup(at_release, pkg_cache).items():
             out["published"].append(
                 {**osv_detail(vid, vuln_cache), "crates": sorted(pkgs)}
             )
@@ -398,7 +566,7 @@ REGISTRIES = {
 }
 
 
-def manifests(full_name, ref, token):
+def manifests(node, full_name, token):
     """(registry, package, version) for everything this repo could publish.
 
     Read from the manifests rather than guessed from the repository name: the
@@ -406,7 +574,8 @@ def manifests(full_name, ref, token):
     to whoever registered it first.
     """
     out = []
-    cargo = lockfile(full_name, ref, token, "Cargo.toml")
+    ref, files = node["defaultBranchRef"]["name"], node["files"]
+    cargo = blob_text(files["Cargo.toml"], full_name, ref, token, "Cargo.toml")
     if cargo and "[package]" in cargo:
         head = cargo.split("[package]", 1)[1].split("\n[", 1)[0]
         name = re.search(r'^name = "([^"]+)"', head, re.MULTILINE)
@@ -418,7 +587,7 @@ def manifests(full_name, ref, token):
         if name and version and wanted:
             out.append(("crates.io", name.group(1), version.group(1)))
 
-    root = lockfile(full_name, ref, token, "package.json")
+    root = blob_text(files["package.json"], full_name, ref, token, "package.json")
     if root:
         try:
             spec = json.loads(root)
@@ -516,36 +685,29 @@ def api_get_text(url):
     return None if body is None else body.decode("utf-8", "replace")
 
 
-def newest_tag(full_name, token, release_tag):
+def newest_tag(node, release_tag):
     """The tag a reader would call the latest one.
 
     The release tag when there is a release. Otherwise the newest tag by commit
     date: nec2-js publishes by pushing <package>@<version> tags and cuts no
-    releases, and the order /tags returns is not documented as chronological,
-    so the dates are asked for rather than assumed. Capped at five tags, which
-    finds the newest without paying for a full listing.
+    releases. The order is asked for, not assumed -- this used to take the
+    first five tags REST listed, in whatever order that was, and look up each
+    one's commit to find the newest of those.
     """
     if release_tag:
         return release_tag, "release"
-    best, best_when = None, ""
-    for tag in api(f"/repos/{full_name}/tags", token, {"per_page": 5}) or []:
-        commit = api(f"/repos/{full_name}/commits/{tag['commit']['sha']}", token)
-        when = (((commit or {}).get("commit") or {}).get("committer") or {}).get(
-            "date", ""
-        )
-        if when > best_when:
-            best, best_when = tag["name"], when
-    return best, "tag"
+    tags = node["refs"]["nodes"]
+    return (tags[0]["name"] if tags else None), "tag"
 
 
-def upstream(repo, full_name, token, reg_cache, apt_serving):
+def upstream(repo, node, full_name, token, reg_cache, apt_serving):
     """Where this repository's code has actually got to, per channel.
 
     The GitHub release is not the answer: usbrelay-rs had a v0.1.1 release for
     months while crates.io sat on 0.1.0. Each registry is asked directly.
     """
     rows = []
-    tag, kind = newest_tag(full_name, token, repo["advisories"].get("tag"))
+    tag, kind = newest_tag(node, repo["advisories"].get("tag"))
     if tag:
         rows.append(
             {
@@ -556,7 +718,7 @@ def upstream(repo, full_name, token, reg_cache, apt_serving):
                 "behind": False,
             }
         )
-    for registry, package, version in manifests(full_name, repo["branch"], token):
+    for registry, package, version in manifests(node, full_name, token):
         live = registry_version(registry, package, full_name, reg_cache)
         rows.append(
             {
@@ -604,33 +766,49 @@ def health(repo):
     return "unknown"
 
 
-def examine(full_name, token, caches, apt_serving):
+def examine(full_name, node, token, caches, apt_serving):
     """Everything the board says about one repository, or None for no row."""
     pkg_cache, vuln_cache, reg_cache = caches
-    meta = api(f"/repos/{full_name}", token)
-    if not meta:
+    # No default branch means no commits, so nothing to run CI on or review.
+    if not node or not node["defaultBranchRef"]:
         return None
+    branch = node["defaultBranchRef"]["name"]
     repo = {
         "name": full_name,
-        "url": meta["html_url"],
+        "url": node["url"],
         "unchecked": None,
-        "branch": meta["default_branch"],
-        "pushed": meta["pushed_at"],
-        "runs": latest_runs(full_name, meta["default_branch"], token),
-        "prs": open_prs(full_name, token),
-        "advisories": advisories(
-            full_name, meta["default_branch"], token, pkg_cache, vuln_cache
-        ),
+        "branch": branch,
+        "pushed": node["pushedAt"],
+        "runs": latest_runs(full_name, branch, token),
+        "prs": open_prs(node),
+        "advisories": advisories(node, full_name, token, pkg_cache, vuln_cache),
     }
     for run in repo["runs"]:
         # Only default-branch runs go stale. A tag run describes the tag,
         # and stays true however far main moves afterwards -- marking a
         # successful release stale because someone merged a README fix
         # since would be telling people to distrust a result that is fine.
-        run["stale"] = not run["ref"] and run["finished"] < meta["pushed_at"]
-    repo["published"] = upstream(repo, full_name, token, reg_cache, apt_serving)
+        run["stale"] = not run["ref"] and run["finished"] < node["pushedAt"]
+    repo["published"] = upstream(repo, node, full_name, token, reg_cache, apt_serving)
     repo["health"] = health(repo)
     return repo if interesting(repo) else None
+
+
+def unread(full_name, why):
+    """The row for a repository with a question nobody answered.
+
+    One unanswered question spoils the row: half a row would show "no
+    advisories" or "no pull requests" for the half not asked. It gets a row
+    regardless of `interesting()`, because whether it is interesting is one
+    of the things nobody could find out.
+    """
+    print(f"  {full_name}: could not check: {why}", file=sys.stderr)
+    return {
+        "name": full_name,
+        "url": f"https://github.com/{full_name}",
+        "unchecked": str(why),
+        "health": "unknown",
+    }
 
 
 def collect(owner, token, only=None):
@@ -644,36 +822,32 @@ def collect(owner, token, only=None):
     except CouldNotCheck as e:
         apt_serving = {}
         unchecked.append({"what": "APT repository", "why": str(e)})
-    # A full crawl is about 700 API requests, and the Actions token allows a
-    # repository 1,000 an hour across all of its workflows. A pull request
-    # check that crawled everything would leave the build that deploys the
-    # merge short, and that build would publish a board full of rows it could
-    # not check. So a check names a few repositories and leaves the listing
-    # alone.
+    # A pull request check names a few repositories and leaves the listing
+    # alone: the Actions token's allowance is shared with the build that
+    # deploys, and a check has no use for the other fifty-odd.
     names = only or EXTRA_REPOS
     if not only:
         try:
             names = [r["full_name"] for r in repos_for(owner, token)] + EXTRA_REPOS
         except CouldNotCheck as e:
             unchecked.append({"what": "repository list", "why": str(e)})
-    for full_name in sorted(set(names)):
-        print(f"- {full_name}", file=sys.stderr)
+    names = sorted(set(names))
+    for start in range(0, len(names), SNAPSHOT_BATCH):
+        batch = names[start : start + SNAPSHOT_BATCH]
         try:
-            repo = examine(full_name, token, caches, apt_serving)
+            nodes = snapshots(batch, token)
         except CouldNotCheck as e:
-            # One unanswered question spoils the row: half a row would show
-            # "no advisories" or "no pull requests" for the half not asked.
-            # It gets a row regardless of `interesting()`, because whether it
-            # is interesting is one of the things nobody could find out.
-            print(f"  could not check: {e}", file=sys.stderr)
-            repo = {
-                "name": full_name,
-                "url": f"https://github.com/{full_name}",
-                "unchecked": str(e),
-                "health": "unknown",
-            }
-        if repo:
-            out.append(repo)
+            # One query answers for the whole batch, so all of it is unread.
+            out.extend(unread(full_name, e) for full_name in batch)
+            continue
+        for full_name in batch:
+            print(f"- {full_name}", file=sys.stderr)
+            try:
+                repo = examine(full_name, nodes[full_name], token, caches, apt_serving)
+            except CouldNotCheck as e:
+                repo = unread(full_name, e)
+            if repo:
+                out.append(repo)
     return sorted(out, key=rank), unchecked
 
 
@@ -1145,7 +1319,7 @@ def render(repos, owner, now, unchecked=()):
 SCHEMA = 2
 
 
-def do_collect(owner, out_dir, only=None):
+def do_collect(owner, out_dir, only=None, max_requests=None):
     """Ask the world what is true, and write it down. Network, no HTML."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
@@ -1171,6 +1345,15 @@ def do_collect(owner, out_dir, only=None):
         f"{len(repos)} repositories written to {path}, {blind} of them unchecked",
         file=sys.stderr,
     )
+    github = SPENT["rest"] + SPENT["graphql"]
+    print(
+        f"{github} GitHub API requests: {SPENT['rest']} REST, {SPENT['graphql']} "
+        f"GraphQL costing {SPENT['points']} points; {SPENT['elsewhere']} "
+        "requests elsewhere",
+        file=sys.stderr,
+    )
+    if max_requests is not None and github > max_requests:
+        sys.exit(f"{github} GitHub API requests is over the {max_requests} allowed")
     return path
 
 
@@ -1216,6 +1399,13 @@ def main():
         help="collect only this repository instead of everything the owner "
         "has; repeat for more than one",
     )
+    collect_cmd.add_argument(
+        "--max-requests",
+        type=int,
+        metavar="N",
+        help="fail, after writing status.json, if it took more than N "
+        "requests to the GitHub API",
+    )
     render_cmd = sub.add_parser(
         "render", parents=[common], help="write index.html from status.json"
     )
@@ -1225,7 +1415,7 @@ def main():
     out_dir = getattr(args, "out_dir", os.path.dirname(os.path.abspath(__file__)))
 
     if args.command == "collect":
-        do_collect(owner, out_dir, args.repo)
+        do_collect(owner, out_dir, args.repo, args.max_requests)
     elif args.command == "render":
         do_render(args.status or os.path.join(out_dir, "status.json"), out_dir)
     else:
