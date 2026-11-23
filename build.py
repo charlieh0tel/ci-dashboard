@@ -578,13 +578,18 @@ def health(repo):
     return "unknown"
 
 
-def collect(owner, token):
+def collect(owner, token, only=None):
     out = []
     # Shared across repositories: the same crate at the same version resolves
     # to the same answer, and these repos overlap heavily.
     pkg_cache, vuln_cache, reg_cache = {}, {}, {}
     apt_serving = apt_repository(token)
-    names = [r["full_name"] for r in repos_for(owner, token)] + EXTRA_REPOS
+    # A full crawl is about 700 API requests, and the Actions token allows a
+    # repository 1,000 an hour across all of its workflows. A pull request
+    # check that crawled everything would leave the build that deploys the
+    # merge short, and a rate-limited request reads as "nothing found". So a
+    # check names a few repositories and leaves the listing alone.
+    names = only or [r["full_name"] for r in repos_for(owner, token)] + EXTRA_REPOS
     for full_name in sorted(set(names)):
         print(f"- {full_name}", file=sys.stderr)
         meta = api(f"/repos/{full_name}", token)
@@ -1018,13 +1023,13 @@ def render(repos, owner, now):
 SCHEMA = 1
 
 
-def do_collect(owner, out_dir):
+def do_collect(owner, out_dir, only=None):
     """Ask the world what is true, and write it down. Network, no HTML."""
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         sys.exit("GITHUB_TOKEN is required (the Actions token is enough)")
     now = dt.datetime.now(dt.timezone.utc)
-    repos = collect(owner, token)
+    repos = collect(owner, token, only)
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "status.json")
     with open(path, "w") as f:
@@ -1073,7 +1078,16 @@ def main():
         "subcommand it does both, which is what CI runs.",
     )
     sub = ap.add_subparsers(dest="command")
-    sub.add_parser("collect", parents=[common], help="write status.json (network)")
+    collect_cmd = sub.add_parser(
+        "collect", parents=[common], help="write status.json (network)"
+    )
+    collect_cmd.add_argument(
+        "--repo",
+        action="append",
+        metavar="OWNER/NAME",
+        help="collect only this repository instead of everything the owner "
+        "has; repeat for more than one",
+    )
     render_cmd = sub.add_parser(
         "render", parents=[common], help="write index.html from status.json"
     )
@@ -1083,7 +1097,7 @@ def main():
     out_dir = getattr(args, "out_dir", os.path.dirname(os.path.abspath(__file__)))
 
     if args.command == "collect":
-        do_collect(owner, out_dir)
+        do_collect(owner, out_dir, args.repo)
     elif args.command == "render":
         do_render(args.status or os.path.join(out_dir, "status.json"), out_dir)
     else:
