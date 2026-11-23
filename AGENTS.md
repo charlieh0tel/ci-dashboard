@@ -11,6 +11,9 @@
   reports requests that were refused. Keep the fixture in step with `SCHEMA`.
   For anything else, run `render` (and `collect` if the change touches the
   API) and look at `_site/index.html`.
+- GitHub API requests are budgeted: see Cost and freshness in the README. Add
+  fields to the `SNAPSHOT` query before adding a REST call per repository,
+  and check the tally `collect` prints.
 - All network I/O goes through `fetch()`: None means a 404, and anything else
   that is not an answer raises `CouldNotCheck`. Never catch that to return an
   empty result.

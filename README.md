@@ -24,7 +24,7 @@ python3 build.py render --out-dir _site      # no token, no network, instant
 ```
 
 That split is worth having because rendering is where the iterating happens: a
-layout change costs a 38ms re-render rather than a four-minute crawl, and the
+layout change costs a 38ms re-render rather than a two-minute crawl, and the
 same file can feed anything else that wants the data. `status.json` carries a
 `schema` field, and `render` refuses a file it does not recognise. A workflow
 runs it every 15 minutes and deploys the result to Pages. The page is completely
@@ -69,12 +69,11 @@ python3 -m unittest discover -s tests
 ```
 
 The live run on a pull request collects four repositories, not the account,
-using `collect --repo OWNER/NAME` (repeatable). A full crawl is about 700 API
-requests and the Actions token gets 1,000 an hour for the whole repository, so
-a pull request that crawled everything would leave the deploying build that
-follows a merge rate-limited, and that build would publish a board full of
-rows it could not check. The job fails if any of its four repositories is
-missing or comes back unchecked.
+using `collect --repo OWNER/NAME` (repeatable): the Actions token's allowance
+is shared with the build that deploys, and a check has no use for the other
+fifty-odd. The job fails if any of its four repositories is missing or comes
+back unchecked, and, through `collect --max-requests`, if collecting them took
+more GitHub API requests than it should -- see Cost and freshness.
 
 Run it locally the same way CI does:
 
@@ -238,7 +237,26 @@ metadata, actions and pull requests), drop the `private` filter in
 
 ## Cost and freshness
 
-Four runs an hour, a few seconds each. GitHub delays scheduled workflows under
-load and drops them entirely on repositories with no activity for 60 days, so
-treat the timestamp on the page as the truth rather than assuming it is current.
-`workflow_dispatch` rebuilds it on demand.
+Four runs an hour, under two minutes each. GitHub delays scheduled workflows
+under load and drops them entirely on repositories with no activity for 60
+days, so treat the timestamp on the page as the truth rather than assuming it
+is current. `workflow_dispatch` rebuilds it on demand.
+
+The number that matters is API requests. The Actions token gets this
+repository 1,000 REST requests an hour and, counted separately, 1,000 GraphQL
+points, across all of its workflows. A full crawl of 62 repositories used to
+be about 720 REST requests, so the schedule only fitted because GitHub was
+dropping most of it. It is now about 100:
+
+| what | requests |
+|---|---|
+| one GraphQL query per ten repositories: branch, pull requests and their checks, lockfiles and manifests at the branch, the release and its lockfiles, the newest tag | 7 (62 points) |
+| workflow runs, which GraphQL does not have: one page per repository, and the default branch's page only when the first did not hold every run | 85 |
+| the repository list, the APT map, an npm workspace's members | 6 |
+
+Four of those an hour is about 370 REST requests and 250 points, which leaves
+room for push builds and pull request checks. `collect` prints the tally as
+its last line, and the pull request check fails if its four repositories take
+more than 25 requests (14 today), so a change that goes back to asking per
+file or per pull request is caught before it merges. OSV and the package
+registries are not GitHub and are not counted against any of this.
