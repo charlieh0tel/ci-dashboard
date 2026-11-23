@@ -68,29 +68,43 @@ jobs:
   # a tag-only publisher, crates.io, npm and the APT repository in about 60.
   collect-and-render:
     runs-on: ubuntu-latest
+    env:
+      REPOS: >-
+        charlieh0tel/ci-dashboard
+        charlieh0tel/nec2-js
+        charlieh0tel/rotaryclub
+        charlieh0tel/usbrelay-rs
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
     - name: Collect
       env:
         GITHUB_TOKEN: ${{ github.token }}
-      run: >-
-        python3 build.py collect --owner charlieh0tel --out-dir "$RUNNER_TEMP/site"
-        --repo charlieh0tel/ci-dashboard
-        --repo charlieh0tel/nec2-js
-        --repo charlieh0tel/rotaryclub
-        --repo charlieh0tel/usbrelay-rs
+      run: |
+        read -r -a names <<< "$REPOS"
+        python3 build.py collect --owner charlieh0tel \
+          --out-dir "$RUNNER_TEMP/site" "${names[@]/#/--repo=}"
 
     - name: Render
       run: python3 build.py render --out-dir "$RUNNER_TEMP/site"
 
     # collect skips what it cannot read instead of failing, so a run that was
-    # refused everything would still exit 0. This repository always has a
-    # workflow run and so always earns a row; the other three may come and go.
-    - name: Check that this repository made it onto the page
-      env:
-        REPO: ${{ github.repository }}
+    # refused everything would still exit 0. All four have workflow runs and
+    # so earn a row. One going missing means it was renamed, archived or could
+    # not be read, and the list above no longer covers what it claims to.
+    - name: Check that all four made it onto the page
       run: |
-        grep -q "\"name\": \"${REPO}\"" "$RUNNER_TEMP/site/status.json"
-        grep -q "href='https://github.com/${REPO}'" "$RUNNER_TEMP/site/index.html"
+        read -r -a names <<< "$REPOS"
+        missing=0
+        for repo in "${names[@]}"; do
+          if ! grep -q "\"name\": \"${repo}\"" "$RUNNER_TEMP/site/status.json"; then
+            echo "::error::${repo} is not in status.json"
+            missing=1
+          fi
+          if ! grep -q "href='https://github.com/${repo}'" "$RUNNER_TEMP/site/index.html"; then
+            echo "::error::${repo} is not on the page"
+            missing=1
+          fi
+        done
         grep -q "</html>" "$RUNNER_TEMP/site/index.html"
+        exit "$missing"
