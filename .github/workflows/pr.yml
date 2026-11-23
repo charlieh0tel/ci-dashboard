@@ -61,11 +61,11 @@ jobs:
     - run: python3 -m unittest discover -s tests -v
 
   # Both halves against the live API, into a scratch directory that nothing
-  # uploads. Four repositories rather than the whole account: a full crawl is
-  # about 700 requests against the 1,000 an hour this repository's Actions
-  # token gets, and the build that deploys the merge draws on the same
-  # allowance minutes later. These four cover each lockfile type, a release,
-  # a tag-only publisher, crates.io, npm and the APT repository in about 60.
+  # uploads. Four repositories rather than the whole account: the Actions
+  # token's 1,000 requests an hour are shared with the build that deploys, a
+  # full crawl is about 100 of them, and these four cover each lockfile type,
+  # a release, a tag-only publisher, crates.io, npm and the APT repository
+  # in 14.
   collect-and-render:
     runs-on: ubuntu-latest
     env:
@@ -77,13 +77,18 @@ jobs:
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+    # 14 requests today: one GraphQL query, two pages of runs for each of
+    # the four at most, the APT map and the four an npm workspace costs. The
+    # ceiling leaves room for a repository gaining a second page of runs, and
+    # none for a change that goes back to asking per file or per pull request.
     - name: Collect
       env:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         read -r -a names <<< "$REPOS"
         python3 build.py collect --owner charlieh0tel \
-          --out-dir "$RUNNER_TEMP/site" "${names[@]/#/--repo=}"
+          --out-dir "$RUNNER_TEMP/site" "${names[@]/#/--repo=}" \
+          --max-requests 25
 
     - name: Render
       run: python3 build.py render --out-dir "$RUNNER_TEMP/site"
