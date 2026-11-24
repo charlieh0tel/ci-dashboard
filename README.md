@@ -182,6 +182,11 @@ Release workflow never touches main, and the only chip it ever showed was a
 stray `workflow_dispatch` from August that failed. A chip from another ref says
 which one, as `Release - success @necpp-wasm@0.2.3`.
 
+A skipped run does not count as a workflow's newest: every job in it was
+skipped, so it ran nothing. dependabot-automerge is skipped on every pull
+request that is not Dependabot's; its chip shows the last run that did
+something, and a workflow that has only ever been skipped has no chip.
+
 A run older than the last push is dimmed and marked stale: it describes code
 that is no longer here. That applies to default-branch runs only -- a tag run
 describes its tag and stays true however far main moves afterwards.
