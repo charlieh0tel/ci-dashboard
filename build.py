@@ -334,7 +334,13 @@ def _runs(full_name, token, extra):
         for run in data.get("workflow_runs", [])
         # Dependabot's own update jobs arrive as `dynamic` runs, one per
         # dependency examined, and fail routinely on advisories it cannot fix.
-        if run.get("event") != "dynamic" and run["status"] == "completed"
+        # A skipped run is one whose every job was skipped: it ran nothing and
+        # says nothing. dependabot-automerge is skipped on every pull request
+        # that is not Dependabot's, and showed a grey chip on every row; the
+        # run before it, where the workflow did something, is the one to show.
+        if run.get("event") != "dynamic"
+        and run["status"] == "completed"
+        and run["conclusion"] != "skipped"
     ]
     return runs, data.get("total_count", 0)
 

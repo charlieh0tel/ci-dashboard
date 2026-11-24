@@ -248,6 +248,23 @@ class Collect(unittest.TestCase):
         # The APT index, OSV once for both refs, crates.io.
         self.assertEqual(build.SPENT["elsewhere"], 3)
 
+    def test_a_skipped_run_is_not_a_result(self):
+        # Newest first, as the API lists them. The automerge workflow last did
+        # something in January; a workflow that has only ever been skipped has
+        # nothing to show.
+        automerge = {"workflow_id": 2, "name": "dependabot-automerge"}
+        runs = [
+            run(**automerge, conclusion="skipped", created_at="2026-01-03T00:00:00Z"),
+            run(**automerge, html_url="https://github.com/example/app/actions/runs/2"),
+            run(workflow_id=3, name="never", conclusion="skipped"),
+            run(),
+        ]
+        repos, _ = self.collect(serving(world(runs)))
+        self.assertEqual(
+            [(r["name"], r["conclusion"], r["url"][-1]) for r in repos[0]["runs"]],
+            [("CI", "success", "1"), ("dependabot-automerge", "success", "2")],
+        )
+
     def test_more_runs_than_a_page_asks_for_the_branch(self):
         elsewhere = run(head_branch="feature", created_at="2026-01-03T00:00:00Z")
         urlopen = serving(world([elsewhere], total=build.RUNS_PAGE + 1))
