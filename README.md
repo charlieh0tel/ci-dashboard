@@ -26,15 +26,16 @@ python3 build.py render --out-dir _site      # no token, no network, instant
 That split is worth having because rendering is where the iterating happens: a
 layout change costs a 38ms re-render rather than a two-minute crawl, and the
 same file can feed anything else that wants the data. `status.json` carries a
-`schema` field, and `render` refuses a file it does not recognise. A workflow
+`schema` field, and `render` refuses a file it does not recognize. A workflow
 runs it every 15 minutes and deploys the result to Pages. The page is completely
 static: it makes no API calls of its own, because a browser hitting the GitHub
 API is capped at 60 requests an hour per visitor, and a page that needs a token
 is a page that leaks one. `status.json` is published alongside it if you want to
 script against the same data.
 
-Rebuild on demand rather than waiting for the half hour: the **rebuild now**
-link in the page footer goes to the workflow, where *Run workflow* fires it, or
+Rebuild on demand rather than waiting for the next scheduled run: the
+**rebuild now** link in the page footer goes to the workflow, where *Run
+workflow* fires it, or
 
 ```sh
 gh workflow run build.yml -R charlieh0tel/ci-dashboard
